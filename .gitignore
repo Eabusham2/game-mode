@@ -1,13 +1,13 @@
-# Python
-__pycache__/
-*.py[cod]
-*.egg-info/
-.eggs/
-build/
-dist/
-.venv/
-venv/
-env/
+# Build artifacts
+*.o
+*.obj
+*.res
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+src/*.o
 
 # GameMode runtime config (machine-specific)
 .gamemode/
@@ -17,3 +17,5 @@ env/
 Thumbs.db
 .vscode/
 .idea/
+__pycache__/
+*.pyc

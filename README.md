@@ -1,53 +1,55 @@
-# 🎮 GameMode — System Optimizer
+# 🎮 GameMode — System Optimizer (native C / Win32)
 
-A full-fledged desktop app that **continuously detects and disables useless
-programs, bloatware, updaters and background apps** with a single master
-switch — so your CPU, RAM and disk go to your game (or your work) instead of to
-Adobe updaters and vendor tray junk.
+A full-fledged **native Windows desktop app** — pure C on the Win32 API, **no
+runtime, no dependencies, a single self-contained `.exe`** — that continuously
+detects and disables useless background programs, bloatware, updaters and
+(optionally) non-essential Windows services with one master switch.
 
 Flip it **ON** and GameMode keeps watch *non-stop*, closing the targeted
 programs every few seconds (they tend to silently respawn — GameMode just keeps
 closing them). Flip it **OFF** and everything is left alone.
 
-> **Platform:** Built for **Windows** (process names, services and anti-cheat
-> detection are Windows-oriented). It imports and partially runs on Linux/macOS
-> for development, but the curated kill/keep lists target Windows.
+> **Platform:** Windows 7 → 11 (x64). Uses Toolhelp for process enumeration,
+> the Service Control Manager for services, and native Win32 controls for the
+> GUI. No .NET, no Python, no external libraries.
 
 ---
 
 ## ✨ Features
 
 - **One master toggle** — a big ON/OFF switch that arms/disarms continuous
-  enforcement.
+  enforcement on a background worker thread.
 - **Four intelligent modes**, from gentle to nuclear (see below).
 - **Custom whitelist & blacklist** for end-task, edited in the GUI and saved
-  between runs.
+  between runs (`%USERPROFILE%\.gamemode\config.ini`).
 - **Built-in knowledge** of common bloatware (Adobe Creative Cloud helpers,
   updaters, telemetry, vendor tray apps), game launchers, **anti-cheats**,
   Discord and the essential Windows processes/services.
 - **Riskiest "Nuclear" mode** — keeps *only* Windows essentials, anti-cheats,
   detected games & launchers, Discord, GameMode itself and your whitelist, and
   closes **everything else**.
-- **Optional Windows service sweeping** in Risk/Nuclear (non-essential
-  auto/manual services only; needs Administrator).
+- **Optional Windows service sweeping** in Risk/Nuclear (non-essential,
+  stoppable services only; uses the Service Control Manager — needs admin).
 - **Dry-run** and **Preview** — see exactly what a mode *would* close before you
   arm it. Nothing gets killed until you're sure.
 - **Live activity log** and running counters in the GUI.
-- **Headless CLI** for servers/scripting/testing.
 
 ---
 
 ## 🛡️ Safety first
 
 GameMode is built so it **cannot break your PC**. Every single termination
-decision passes through one guard that protects, *unconditionally and in every
-mode (even Nuclear, even if you blacklist them)*:
+decision flows through one guard (`is_protected()` in `src/engine.c`) that
+protects, *unconditionally and in every mode — even Nuclear, even if you
+blacklist them*:
 
 - Critical OS processes (`csrss`, `wininit`, `winlogon`, `services`, `lsass`,
-  `svchost`, `dwm`, `explorer`, the kernel, Windows Defender, …)
+  `svchost`, `dwm`, `explorer`, the kernel, Windows Defender, …) and PIDs ≤ 4.
 - **Anti-cheat engines** (EasyAntiCheat, BattlEye, Vanguard, PunkBuster, …) — so
   you never get kicked or banned mid-match.
-- **GameMode itself** and its whole process tree (and its launching shell).
+- **GameMode itself** — its own PID plus its ancestors and all descendants
+  (computed from the process tree each scan), so it can never terminate itself
+  or the shell that launched it.
 - Anything on **your whitelist**.
 
 The blacklist can never override these protections.
@@ -65,46 +67,49 @@ The blacklist can never override these protections.
 
 ---
 
-## 🚀 Install & run
+## 🔨 Build
 
-Requires **Python 3.8+**. The GUI uses `tkinter` (bundled with the standard
-Python installer on Windows; on Linux install `python3-tk`).
+The app links only against standard Windows system libraries
+(`user32`, `gdi32`, `comctl32`, `advapi32`, `shell32`, `ole32`).
 
-```bash
-pip install -r requirements.txt
+### MSVC (Visual Studio)
 
-# Launch the desktop app:
-python main.py
-#   or
-python -m gamemode
+Open a *Developer Command Prompt for VS* and run:
+
+```bat
+build.bat
 ```
 
-For full power (closing protected apps / stopping services) run your terminal
-**as Administrator** on Windows.
+→ produces `GameMode.exe`.
 
-### Headless CLI
+### MinGW-w64 (on Windows)
 
-```bash
-# Preview what a mode would close — kills nothing:
-python -m gamemode.cli preview --mode nuclear
-
-# Run continuously until Ctrl+C:
-python -m gamemode.cli run --mode smart --interval 5
-
-# Safe rehearsal — report only:
-python -m gamemode.cli run --mode aggressive --dry-run
-
-# List running processes:
-python -m gamemode.cli list
+```sh
+mingw32-make
 ```
+
+### Cross-compile from Linux/macOS (MinGW-w64)
+
+```sh
+make CC=x86_64-w64-mingw32-gcc WINDRES=x86_64-w64-mingw32-windres
+```
+
+All three produce a single self-contained **`GameMode.exe`**.
 
 ---
 
-## 🧭 Recommended first run
+## ▶️ Run
+
+Double-click **`GameMode.exe`**. Because it closes other programs and can stop
+services, the embedded manifest requests **Administrator** elevation (you'll see
+a UAC prompt). Running elevated is what lets it close protected/other-user
+processes and stop services.
+
+**Recommended first run**
 
 1. Start on **Smart** mode.
-2. Open the **Processes** tab and click **Preview kills for current mode** (or
-   tick **Dry run** on the Dashboard) to see what would close.
+2. Open the **Processes** tab → **Preview kills** (or tick **Dry run** on the
+   Dashboard) to see what would close.
 3. Add anything you want to keep to the **Whitelist**; add anything you always
    want gone to the **Blacklist**.
 4. Flip the master switch **ON**.
@@ -115,25 +120,27 @@ python -m gamemode.cli list
 ## 🗂️ Project layout
 
 ```
-main.py                 # launcher → GUI
-gamemode/
-  __init__.py
-  __main__.py           # python -m gamemode
-  known_lists.py        # curated keep/kill knowledge (the safety net)
-  config.py             # persistent settings (~/.gamemode/config.json)
-  engine.py             # background detector/terminator + safety guards
-  gui.py                # tkinter desktop interface
-  cli.py                # headless command-line interface
-requirements.txt
+src/
+  gamemode.h      # shared decls, control IDs, app constants
+  known_lists.h/.c# curated keep/kill knowledge (the safety net)
+  modes.c         # mode labels & descriptions
+  config.h/.c     # settings persistence (INI) + dynamic string list
+  engine.h/.c     # process/service detection + termination + safety guards
+  gui.c           # native Win32 GUI + WinMain entry point
+app.manifest      # visual styles + admin elevation + DPI awareness
+resource.rc       # embeds the manifest + version info
+Makefile          # MinGW / cross build
+build.bat         # MSVC build
 ```
 
-Settings are saved to `~/.gamemode/config.json`.
+Settings are saved to `%USERPROFILE%\.gamemode\config.ini`.
 
 ---
 
 ## ⚠️ Disclaimer
 
-GameMode force-closes programs. **Save your work first.** Closing apps can lose
-unsaved data; stopping services may affect system features until the next
-reboot. Use **Preview** / **Dry run** until you trust your configuration. You
-are responsible for what you put on your blacklist and which mode you arm.
+GameMode force-closes programs with `TerminateProcess` (no graceful save).
+**Save your work first.** Closing apps can lose unsaved data; stopping services
+may affect system features until the next reboot. Use **Preview** / **Dry run**
+until you trust your configuration. You are responsible for what you put on your
+blacklist and which mode you arm.
