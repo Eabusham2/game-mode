@@ -14,7 +14,7 @@ cl /nologo /O2 /W3 /MT ^
    src\known_lists.c src\modes.c src\config.c src\engine.c src\gui.c ^
    resource.res ^
    /link /SUBSYSTEM:WINDOWS /MANIFEST:NO ^
-   user32.lib gdi32.lib comctl32.lib advapi32.lib shell32.lib ole32.lib
+   user32.lib gdi32.lib comctl32.lib advapi32.lib shell32.lib ole32.lib psapi.lib
 if errorlevel 1 goto :fail
 
 echo.

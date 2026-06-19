@@ -1,64 +1,162 @@
 /* engine.c - process/service detection and termination with hard safety guards.
  *
- * Every kill decision flows through is_protected(): critical OS processes,
- * anti-cheats, GameMode's own process tree and the user whitelist can NEVER be
- * terminated - not by the blacklist, not by Nuclear mode. */
+ * Detection pipeline (per process), in order:
+ *   1. HARD-protected  -> always kept: self/tree, PID<=4, foreground app,
+ *      PROTECTED_SYSTEM, ANTI_CHEAT, user whitelist.
+ *   2. blacklist       -> always closed (unless hard-protected).
+ *   3. mode rules      -> Smart/Aggressive use curated lists + heuristics;
+ *      Risk/Nuclear use an allow-list (keep set), closing everything else.
+ *   4. SOFT-system     -> anything under %WinDir% is shielded from heuristic
+ *      and allow-list kills (but explicit lists/blacklist still apply), so the
+ *      OS itself is never dismantled.
+ *
+ * Heuristics ("intelligent" detection) flag windowless background helpers whose
+ * name matches known updater/telemetry/crash-handler patterns - catching junk
+ * from vendors we never hard-coded, while sparing anything you are looking at. */
 #include "engine.h"
 #include "known_lists.h"
 #include <tlhelp32.h>
+#include <psapi.h>
+#include <winsvc.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 /* ----------------------------------------------------- process snapshot */
 typedef struct {
-    DWORD pid;
-    DWORD ppid;
-    char  name[260];   /* original case */
-    char  lname[260];  /* lower-case    */
-    int   self;        /* part of GameMode's own process tree */
+    DWORD  pid;
+    DWORD  ppid;
+    char   name[260];    /* original case */
+    char   lname[260];   /* lower-case    */
+    char   lpath[MAX_PATH]; /* lower-case full image path ("" if unknown) */
+    int    self;         /* part of GameMode's own process tree */
+    int    has_window;   /* owns a visible top-level window */
+    SIZE_T mem;          /* working-set bytes */
 } ProcEntry;
 
 typedef struct {
     ProcEntry *items;
-    int count, cap;
+    int   count, cap;
+    DWORD foreground_pid;
 } ProcList;
 
-static void proclist_free(ProcList *pl) { free(pl->items); pl->items = NULL; pl->count = pl->cap = 0; }
+static void proclist_free(ProcList *pl)
+{
+    free(pl->items); pl->items = NULL; pl->count = pl->cap = 0;
+}
 
+/* ---- visible-window collection (for the "background helper" heuristic) ---- */
+typedef struct { DWORD *pids; int count, cap; } PidSet;
+
+static void pidset_add(PidSet *s, DWORD pid)
+{
+    int i;
+    for (i = 0; i < s->count; ++i) if (s->pids[i] == pid) return;
+    if (s->count >= s->cap) {
+        int ncap = s->cap ? s->cap * 2 : 64;
+        DWORD *np = (DWORD *)realloc(s->pids, (size_t)ncap * sizeof(DWORD));
+        if (!np) return;
+        s->pids = np; s->cap = ncap;
+    }
+    s->pids[s->count++] = pid;
+}
+
+static int pidset_has(const PidSet *s, DWORD pid)
+{
+    int i;
+    for (i = 0; i < s->count; ++i) if (s->pids[i] == pid) return 1;
+    return 0;
+}
+
+static BOOL CALLBACK enum_windows_cb(HWND hwnd, LPARAM lp)
+{
+    PidSet *set = (PidSet *)lp;
+    DWORD pid = 0;
+    LONG ex;
+    if (!IsWindowVisible(hwnd)) return TRUE;
+    if (GetWindow(hwnd, GW_OWNER) != NULL) return TRUE;     /* top-level only */
+    ex = GetWindowLongA(hwnd, GWL_EXSTYLE);
+    if (ex & WS_EX_TOOLWINDOW) return TRUE;                  /* tray/util windows */
+    if (GetWindowTextLengthA(hwnd) == 0) return TRUE;        /* no title bar */
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid) pidset_add(set, pid);
+    return TRUE;
+}
+
+/* ---- lower-cased Windows directory, cached ---- */
+static const char *windir_lower(void)
+{
+    static char dir[MAX_PATH];
+    static int ready = 0;
+    if (!ready) {
+        char raw[MAX_PATH];
+        UINT n = GetWindowsDirectoryA(raw, sizeof(raw));
+        if (n == 0 || n >= sizeof(raw)) raw[0] = '\0';
+        str_lower_copy(dir, sizeof(dir), raw);
+        ready = 1;
+    }
+    return dir;
+}
+
+/* Capture all processes plus per-process path, memory and window/foreground
+ * state used by the decision logic. */
 static int proclist_capture(ProcList *pl)
 {
     HANDLE snap;
     PROCESSENTRY32 pe;
+    PidSet windows = { NULL, 0, 0 };
+
     pl->items = NULL; pl->count = pl->cap = 0;
+    pl->foreground_pid = 0;
+    GetWindowThreadProcessId(GetForegroundWindow(), &pl->foreground_pid);
+    EnumWindows(enum_windows_cb, (LPARAM)&windows);
 
     snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
-    if (snap == INVALID_HANDLE_VALUE) return 0;
+    if (snap == INVALID_HANDLE_VALUE) { free(windows.pids); return 0; }
     pe.dwSize = sizeof(pe);
     if (Process32First(snap, &pe)) {
         do {
+            ProcEntry *en;
+            HANDLE h;
             if (pl->count >= pl->cap) {
                 int ncap = pl->cap ? pl->cap * 2 : 256;
                 ProcEntry *ni = (ProcEntry *)realloc(pl->items, (size_t)ncap * sizeof(ProcEntry));
                 if (!ni) break;
                 pl->items = ni; pl->cap = ncap;
             }
-            {
-                ProcEntry *en = &pl->items[pl->count++];
-                en->pid = pe.th32ProcessID;
-                en->ppid = pe.th32ParentProcessID;
-                en->self = 0;
-                lstrcpynA(en->name, pe.szExeFile, sizeof(en->name));
-                str_lower_copy(en->lname, sizeof(en->lname), en->name);
+            en = &pl->items[pl->count++];
+            en->pid = pe.th32ProcessID;
+            en->ppid = pe.th32ParentProcessID;
+            en->self = 0;
+            en->mem = 0;
+            en->lpath[0] = '\0';
+            lstrcpynA(en->name, pe.szExeFile, sizeof(en->name));
+            str_lower_copy(en->lname, sizeof(en->lname), en->name);
+            en->has_window = pidset_has(&windows, en->pid);
+
+            /* best-effort path + memory (needs an open handle) */
+            h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_VM_READ,
+                            FALSE, en->pid);
+            if (!h)
+                h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, en->pid);
+            if (h) {
+                char path[MAX_PATH];
+                DWORD sz = sizeof(path);
+                PROCESS_MEMORY_COUNTERS pmc;
+                if (QueryFullProcessImageNameA(h, 0, path, &sz))
+                    str_lower_copy(en->lpath, sizeof(en->lpath), path);
+                if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc)))
+                    en->mem = pmc.WorkingSetSize;
+                CloseHandle(h);
             }
         } while (Process32Next(snap, &pe));
     }
     CloseHandle(snap);
+    free(windows.pids);
     return pl->count;
 }
 
-/* Mark GameMode's own pid, its ancestors and all its descendants as protected
- * so the tool can never terminate itself or the shell that launched it. */
+/* Mark GameMode's own pid, its ancestors and all its descendants. */
 static void proclist_mark_self(ProcList *pl)
 {
     DWORD self = GetCurrentProcessId();
@@ -67,7 +165,6 @@ static void proclist_mark_self(ProcList *pl)
     for (i = 0; i < pl->count; ++i)
         if (pl->items[i].pid == self) { pl->items[i].self = 1; idx_self = i; }
 
-    /* Ancestors: walk parent chain upward from ourselves. */
     if (idx_self >= 0) {
         DWORD cur = pl->items[idx_self].ppid;
         int guard = 0;
@@ -80,8 +177,6 @@ static void proclist_mark_self(ProcList *pl)
             cur = pl->items[found].ppid;
         }
     }
-    /* Descendants: any process whose parent is already marked, repeated until
-     * the set stops growing. */
     do {
         changed = 0;
         for (i = 0; i < pl->count; ++i) {
@@ -100,15 +195,34 @@ static void proclist_mark_self(ProcList *pl)
 
 /* ----------------------------------------------------- decision logic */
 
-/* True when a process must NEVER be terminated. Single chokepoint. */
-static int is_protected(const Engine *e, const ProcEntry *p)
+/* Never-kill tier: nothing here is ever terminated, in any mode. */
+static int is_hard_protected(const Engine *e, const ProcEntry *p, DWORD foreground)
 {
     if (p->self) return 1;
-    if (p->pid <= 4) return 1;                       /* System / Idle */
+    if (p->pid <= 4) return 1;                          /* System / Idle */
+    if (p->pid == foreground && foreground != 0) return 1; /* app you're using */
     if (namelist_contains(&PROTECTED_SYSTEM, p->lname)) return 1;
     if (namelist_contains(&ANTI_CHEAT, p->lname)) return 1;
     if (strlist_contains(&e->cfg->whitelist, p->lname)) return 1;
     return 0;
+}
+
+/* Soft tier: OS files under %WinDir%. Shielded from heuristic and allow-list
+ * kills so the operating system is never taken apart, but explicit curated
+ * lists / the user blacklist can still target them. */
+static int is_soft_system(const ProcEntry *p)
+{
+    const char *wd = windir_lower();
+    if (wd[0] == '\0' || p->lpath[0] == '\0') return 0;
+    return strncmp(p->lpath, wd, strlen(wd)) == 0;
+}
+
+/* Apps we never want heuristics to touch (real, useful software). */
+static int is_known_good(const char *lname)
+{
+    return namelist_contains(&GAME_PLATFORMS, lname) ||
+           namelist_contains(&KEEP_WHILE_GAMING, lname) ||
+           namelist_contains(&COMMON_APPS, lname);
 }
 
 /* For Risk/Nuclear: is this name on the allow-list we keep? */
@@ -123,20 +237,41 @@ static int in_keep_set(const Engine *e, const char *lname)
     return 0;
 }
 
-/* Decide whether a (already non-protected) process should be terminated. */
-static int should_kill(const Engine *e, const char *lname)
+/* Heuristic junk detection. Conservative: requires a windowless background
+ * process whose name matches a junk pattern and is not known-good/soft-system. */
+static int heuristic_junk(const Engine *e, const ProcEntry *p)
 {
-    if (strlist_contains(&e->cfg->blacklist, lname)) return 1; /* blacklist wins */
+    if (!e->cfg->heuristics) return 0;
+    if (p->has_window) return 0;          /* you can see it -> leave it */
+    if (is_known_good(p->lname)) return 0;
+    if (is_soft_system(p)) return 0;      /* OS component -> leave it */
+
+    if (namelist_substr(&JUNK_PATTERNS_STRONG, p->lname)) return 1; /* Smart+ */
+    if (e->cfg->mode >= MODE_AGGRESSIVE &&
+        namelist_substr(&JUNK_PATTERNS_WEAK, p->lname)) return 1;   /* Aggr+  */
+    return 0;
+}
+
+/* Decide whether a (non hard-protected) process should be terminated. */
+static int should_kill(const Engine *e, const ProcEntry *p)
+{
+    const char *lname = p->lname;
+
+    if (strlist_contains(&e->cfg->blacklist, lname)) return 1;  /* user wins */
 
     switch (e->cfg->mode) {
     case MODE_SMART:
-        return namelist_contains(&BLOATWARE, lname);
+        if (namelist_contains(&BLOATWARE, lname)) return 1;
+        return heuristic_junk(e, p);
     case MODE_AGGRESSIVE:
-        return namelist_contains(&BLOATWARE, lname) ||
-               namelist_contains(&BACKGROUND_NOISE, lname);
+        if (namelist_contains(&BLOATWARE, lname)) return 1;
+        if (namelist_contains(&BACKGROUND_NOISE, lname)) return 1;
+        return heuristic_junk(e, p);
     case MODE_RISK:
     case MODE_NUCLEAR:
-        return !in_keep_set(e, lname);
+        if (in_keep_set(e, lname)) return 0;
+        if (is_soft_system(p)) return 0;   /* don't dismantle the OS */
+        return 1;
     }
     return 0;
 }
@@ -146,14 +281,12 @@ static void engine_log(Engine *e, int level, const char *fmt, ...)
 {
     char *buf;
     va_list ap;
-    int n;
     if (!e->notify) return;
     buf = (char *)malloc(512);
     if (!buf) return;
     va_start(ap, fmt);
-    n = wvsprintfA(buf, fmt, ap);   /* wvsprintf: no %f, but we don't need it */
+    wvsprintfA(buf, fmt, ap);   /* note: supports %s %d %u %lu %x, NOT %f */
     va_end(ap);
-    (void)n;
     PostMessageA(e->notify, WM_APP_LOG, (WPARAM)level, (LPARAM)buf);
 }
 
@@ -170,7 +303,8 @@ static int terminate_pid(Engine *e, const ProcEntry *p)
     }
     if (TerminateProcess(h, 1)) {
         CloseHandle(h);
-        engine_log(e, LOG_KILL, "Closed %s (pid %lu)", p->name, p->pid);
+        engine_log(e, LOG_KILL, "Closed %s (pid %lu, %lu MB)",
+                   p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)));
         return 1;
     }
     CloseHandle(h);
@@ -179,8 +313,6 @@ static int terminate_pid(Engine *e, const ProcEntry *p)
 }
 
 /* ----------------------------------------------------- services */
-#include <winsvc.h>
-
 static int service_accepts_stop(SC_HANDLE svc)
 {
     SERVICE_STATUS_PROCESS ssp;
@@ -253,6 +385,7 @@ long engine_scan_once(Engine *e)
 {
     ProcList pl;
     long killed = 0, targets = 0, svc_stopped = 0;
+    SIZE_T freed = 0;
     int dry = e->cfg->dry_run;
     int i;
 
@@ -264,14 +397,15 @@ long engine_scan_once(Engine *e)
 
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        if (is_protected(e, p)) continue;
-        if (!should_kill(e, p->lname)) continue;
+        if (is_hard_protected(e, p, pl.foreground_pid)) continue;
+        if (!should_kill(e, p)) continue;
         ++targets;
         if (dry) {
-            engine_log(e, LOG_DRY, "[dry-run] would close %s (pid %lu)", p->name, p->pid);
+            engine_log(e, LOG_DRY, "[dry-run] would close %s (pid %lu, %lu MB)",
+                       p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)));
             continue;
         }
-        if (terminate_pid(e, p)) ++killed;
+        if (terminate_pid(e, p)) { ++killed; freed += p->mem; }
     }
     proclist_free(&pl);
 
@@ -284,6 +418,7 @@ long engine_scan_once(Engine *e)
     e->stats.killed += killed;
     e->stats.services_stopped += svc_stopped;
     e->stats.last_targets = targets;
+    e->stats.ram_freed_mb += (long)(freed / (1024 * 1024));
     LeaveCriticalSection(&e->lock);
 
     if (targets == 0 && svc_stopped == 0)
@@ -365,8 +500,9 @@ void engine_preview(Engine *e, ProcCb cb, void *user)
     proclist_mark_self(&pl);
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        if (is_protected(e, p)) continue;
-        if (should_kill(e, p->lname)) cb(p->name, p->pid, 1, user);
+        if (is_hard_protected(e, p, pl.foreground_pid)) continue;
+        if (should_kill(e, p))
+            cb(p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)), 1, user);
     }
     proclist_free(&pl);
 }
@@ -379,8 +515,35 @@ void engine_list_running(Engine *e, ProcCb cb, void *user)
     proclist_mark_self(&pl);
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        int doomed = (!is_protected(e, p)) && should_kill(e, p->lname);
-        cb(p->name, p->pid, doomed, user);
+        int doomed = (!is_hard_protected(e, p, pl.foreground_pid)) && should_kill(e, p);
+        cb(p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)), doomed, user);
     }
     proclist_free(&pl);
+}
+
+int engine_kill_pid(Engine *e, unsigned long pid, const char *name)
+{
+    char lname[260];
+    HANDLE h;
+    str_lower_copy(lname, sizeof(lname), name);
+
+    if (pid <= 4 || pid == GetCurrentProcessId() ||
+        namelist_contains(&PROTECTED_SYSTEM, lname) ||
+        namelist_contains(&ANTI_CHEAT, lname)) {
+        engine_log(e, LOG_WARN, "Refusing to close protected process %s.", name);
+        return 0;
+    }
+    h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+    if (!h) {
+        engine_log(e, LOG_WARN, "Access denied closing %s (pid %lu).", name, pid);
+        return 0;
+    }
+    if (TerminateProcess(h, 1)) {
+        CloseHandle(h);
+        engine_log(e, LOG_KILL, "Closed %s (pid %lu) [manual]", name, pid);
+        return 1;
+    }
+    CloseHandle(h);
+    engine_log(e, LOG_ERROR, "Failed to close %s (pid %lu)", name, pid);
+    return 0;
 }

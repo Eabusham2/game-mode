@@ -22,7 +22,7 @@
 
 #define APP_NAME      "GameMode"
 #define APP_TITLE     "GameMode - System Optimizer"
-#define APP_VERSION   "2.0.0"
+#define APP_VERSION   "3.0.0"
 
 /* ------------------------------------------------------------------ modes */
 enum {
@@ -48,8 +48,9 @@ enum {
 };
 
 /* Custom window messages posted from the engine worker thread to the GUI. */
-#define WM_APP_LOG   (WM_APP + 1)   /* wParam = level, lParam = char* (heap)  */
-#define WM_APP_STATS (WM_APP + 2)   /* signal the GUI to refresh its counters */
+#define WM_APP_LOG    (WM_APP + 1)   /* wParam = level, lParam = char* (heap)  */
+#define WM_APP_STATS  (WM_APP + 2)   /* signal the GUI to refresh its counters */
+#define WM_APP_TRAY   (WM_APP + 3)   /* notify-icon callback                    */
 
 /* --------------------------------------------------------------- control IDs */
 #define IDC_TAB            1000
@@ -68,6 +69,10 @@ enum {
 #define IDC_CLEARLOG       1127
 #define IDC_MODE_GROUP     1128
 #define IDC_OPT_GROUP      1129
+#define IDC_CHK_HEUR       1130
+#define IDC_CHK_TRAY       1131
+#define IDC_CHK_STARTUP    1132
+#define IDC_CHK_NOTIFY     1133
 
 /* Whitelist page */
 #define IDC_WL_LIST        1200
@@ -90,9 +95,19 @@ enum {
 #define IDC_PROC_TOWL      1403
 #define IDC_PROC_TOBL      1404
 #define IDC_PROC_INFO      1405
+#define IDC_PROC_KILLSEL   1406
+
+/* Tray menu commands */
+#define IDM_TRAY_SHOW      1500
+#define IDM_TRAY_TOGGLE    1501
+#define IDM_TRAY_MODE      1510   /* +mode index */
+#define IDM_TRAY_EXIT      1520
 
 #define TIMER_STATS        1
+#define TIMER_NOTIFY       2
 #define ID_TRAY            0xA000
+#define HOTKEY_TOGGLE      1
+#define IDI_APPICON        101
 
 /* ------------------------------------------------------------ small string utils */
 /* Lower-case copy of src into dst (size bytes, always NUL-terminated). */

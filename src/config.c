@@ -136,6 +136,10 @@ void config_defaults(Config *c)
     c->dry_run = 0;
     c->manage_services = 0;
     c->enabled_on_start = 0;
+    c->heuristics = 1;           /* smart detection on by default */
+    c->minimize_to_tray = 1;
+    c->run_at_startup = 0;
+    c->notifications = 1;
     strlist_init(&c->whitelist);
     strlist_init(&c->blacklist);
 }
@@ -161,6 +165,10 @@ void config_load(Config *c)
     c->dry_run = GetPrivateProfileIntA("general", "dry_run", 0, path) ? 1 : 0;
     c->manage_services = GetPrivateProfileIntA("general", "manage_services", 0, path) ? 1 : 0;
     c->enabled_on_start = GetPrivateProfileIntA("general", "enabled_on_start", 0, path) ? 1 : 0;
+    c->heuristics = GetPrivateProfileIntA("general", "heuristics", 1, path) ? 1 : 0;
+    c->minimize_to_tray = GetPrivateProfileIntA("general", "minimize_to_tray", 1, path) ? 1 : 0;
+    c->run_at_startup = GetPrivateProfileIntA("general", "run_at_startup", 0, path) ? 1 : 0;
+    c->notifications = GetPrivateProfileIntA("general", "notifications", 1, path) ? 1 : 0;
 
     GetPrivateProfileStringA("lists", "whitelist", "", buf, sizeof(buf), path);
     strlist_split(&c->whitelist, buf);
@@ -182,6 +190,10 @@ void config_save(const Config *c)
     WritePrivateProfileStringA("general", "dry_run", c->dry_run ? "1" : "0", path);
     WritePrivateProfileStringA("general", "manage_services", c->manage_services ? "1" : "0", path);
     WritePrivateProfileStringA("general", "enabled_on_start", c->enabled_on_start ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "heuristics", c->heuristics ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "minimize_to_tray", c->minimize_to_tray ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "run_at_startup", c->run_at_startup ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "notifications", c->notifications ? "1" : "0", path);
 
     strlist_join(&c->whitelist, buf, sizeof(buf));
     WritePrivateProfileStringA("lists", "whitelist", buf, path);

@@ -1,7 +1,13 @@
 #include <windows.h>
 
+/* Keep in sync with IDI_APPICON in src/gamemode.h */
+#define IDI_APPICON 101
+
 /* Embed the application manifest (visual styles + admin elevation). */
 CREATEPROCESS_MANIFEST_RESOURCE_ID RT_MANIFEST "app.manifest"
+
+/* Application icon (window + taskbar + system tray). */
+IDI_APPICON ICON "assets/icon.ico"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION    2,0,0,0

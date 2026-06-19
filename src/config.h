@@ -22,6 +22,10 @@ typedef struct {
     int     dry_run;          /* report only, kill nothing */
     int     manage_services;  /* sweep services in Risk/Nuclear */
     int     enabled_on_start; /* auto-resume the toggle on launch */
+    int     heuristics;       /* enable pattern/window-based junk detection */
+    int     minimize_to_tray; /* hide to tray on minimize/close */
+    int     run_at_startup;   /* register in HKCU..\Run */
+    int     notifications;    /* show tray balloons when closing in background */
     StrList whitelist;        /* never kill these */
     StrList blacklist;        /* always kill these */
 } Config;

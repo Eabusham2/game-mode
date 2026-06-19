@@ -17,7 +17,15 @@ extern const NameList BACKGROUND_NOISE;   /* killed from Aggressive up          
 extern const NameList COMMON_APPS;        /* kept in Risk, killed in Nuclear     */
 extern const NameList ESSENTIAL_SERVICES; /* never stopped (service names)       */
 
-/* Case-insensitive membership test. */
+/* Heuristic substring patterns used to recognise junk we did not hard-code.
+ * STRONG = high confidence (updaters/crash handlers/telemetry) -> Smart mode.
+ * WEAK   = softer signals (helper/agent/tray/sync) -> Aggressive mode only.   */
+extern const NameList JUNK_PATTERNS_STRONG;
+extern const NameList JUNK_PATTERNS_WEAK;
+
+/* Case-insensitive exact membership test. */
 int namelist_contains(const NameList *list, const char *name_lower);
+/* True if any list entry occurs as a substring of name_lower. */
+int namelist_substr(const NameList *list, const char *name_lower);
 
 #endif /* KNOWN_LISTS_H */
