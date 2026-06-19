@@ -1,5 +1,7 @@
 # 🎮 GameMode — System Optimizer (native C / Win32)
 
+[![Build GameMode.exe](https://github.com/Eabusham2/game-mode-/actions/workflows/build.yml/badge.svg)](https://github.com/Eabusham2/game-mode-/actions/workflows/build.yml)
+
 A full-fledged **native Windows desktop app** — pure C on the Win32 API, **no
 runtime, no dependencies, a single self-contained `.exe`** — that continuously
 detects and disables useless background programs, bloatware, updaters,
@@ -115,6 +117,14 @@ make CC=x86_64-w64-mingw32-gcc WINDRES=x86_64-w64-mingw32-windres
 ```
 
 All produce a single self-contained **`GameMode.exe`**.
+
+### Don't want to build it yourself?
+
+Every push is built by GitHub Actions (`.github/workflows/build.yml`). Grab the
+`GameMode-windows-x64` artifact from the latest green run on the
+[Actions tab](https://github.com/Eabusham2/game-mode-/actions/workflows/build.yml),
+or, on a version tag (`vX.Y.Z`), download `GameMode.exe` from the matching
+[Release](https://github.com/Eabusham2/game-mode-/releases).
 
 The app icon is generated (no binary committed dependency needed to regenerate):
 ```sh
