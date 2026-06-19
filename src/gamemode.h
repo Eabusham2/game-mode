@@ -73,6 +73,16 @@ enum {
 #define IDC_CHK_TRAY       1131
 #define IDC_CHK_STARTUP    1132
 #define IDC_CHK_NOTIFY     1133
+#define IDC_CHK_RESTORE    1134
+#define IDC_CHK_RELAUNCH   1135
+
+/* Presets tab: one checkbox per PRESETS[] entry, base + index */
+#define IDC_PRESET_BASE    1600
+
+/* Task picker dialog */
+#define IDC_PICK_LV        1700
+#define IDC_PICK_ADD       1701
+#define IDC_PICK_CANCEL    1702
 
 /* Whitelist page */
 #define IDC_WL_LIST        1200
@@ -80,6 +90,7 @@ enum {
 #define IDC_WL_ADD         1202
 #define IDC_WL_REMOVE      1203
 #define IDC_WL_INTRO       1204
+#define IDC_WL_PICK        1205
 
 /* Blacklist page */
 #define IDC_BL_LIST        1300
@@ -87,6 +98,7 @@ enum {
 #define IDC_BL_ADD         1302
 #define IDC_BL_REMOVE      1303
 #define IDC_BL_INTRO       1304
+#define IDC_BL_PICK        1305
 
 /* Processes page */
 #define IDC_PROC_LIST      1400

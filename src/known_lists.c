@@ -160,3 +160,40 @@ int namelist_substr(const NameList *list, const char *name_lower)
             return 1;
     return 0;
 }
+
+/* ------------------------------------------------------------- presets ---- */
+#define NL(a) { a, (int)(sizeof(a) / sizeof((a)[0])) }
+
+static const char *const ps_gamebar[]  = { "gamebar.exe", "gamebarftserver.exe",
+                                           "gamebarpresencewriter.exe" };
+static const char *const ps_cortana[]  = { "cortana.exe", "searchui.exe" };
+static const char *const ps_widgets[]  = { "widgets.exe", "widgetservice.exe" };
+static const char *const ps_onedrive[] = { "onedrive.exe", "onedrivestandaloneupdater.exe" };
+static const char *const ps_teams[]    = { "ms-teams.exe", "teams.exe" };
+static const char *const ps_skype[]    = { "skype.exe", "skypeapp.exe", "skypehost.exe",
+                                           "skypebackgroundhost.exe" };
+static const char *const ps_phone[]    = { "yourphone.exe", "phoneexperiencehost.exe",
+                                           "yourphoneserver.exe" };
+static const char *const ps_spotify[]  = { "spotify.exe", "spotifywebhelper.exe" };
+static const char *const ps_edge[]     = { "msedge.exe", "msedgewebview2.exe" };
+static const char *const ps_adobe[]    = { "creative cloud.exe", "ccxprocess.exe",
+                                           "cclibrary.exe", "adobeipcbroker.exe",
+                                           "adobenotificationclient.exe",
+                                           "adobe desktop service.exe" };
+static const char *const ps_office[]   = { "officebackgroundtaskhandler.exe",
+                                           "officehubtaskhost.exe", "officec2rclient.exe" };
+
+const Preset PRESETS[] = {
+    { "gamebar",  "Xbox Game Bar overlay",          1, NL(ps_gamebar)  },
+    { "cortana",  "Cortana / search assistant",     1, NL(ps_cortana)  },
+    { "widgets",  "Windows Widgets",                1, NL(ps_widgets)  },
+    { "teams",    "Microsoft Teams (personal)",     1, NL(ps_teams)    },
+    { "skype",    "Skype",                          1, NL(ps_skype)    },
+    { "adobecc",  "Adobe Creative Cloud helpers",   1, NL(ps_adobe)    },
+    { "office",   "Office background tasks",        1, NL(ps_office)   },
+    { "onedrive", "OneDrive",                       0, NL(ps_onedrive) },
+    { "phone",    "Phone Link / Your Phone",        0, NL(ps_phone)    },
+    { "spotify",  "Spotify",                        0, NL(ps_spotify)  },
+    { "edge",     "Microsoft Edge (background)",     0, NL(ps_edge)     },
+};
+const int PRESET_COUNT = (int)(sizeof(PRESETS) / sizeof(PRESETS[0]));

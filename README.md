@@ -26,8 +26,19 @@ closing them). Flip it **OFF** and everything is left alone.
   telemetry patterns (`*update*`, `*updater*`, `crashhandler`, `telemetry`,
   `compattel`, `census`, …), so it closes junk from vendors that were never
   hard-coded — while sparing anything you have a window open for.
+- **Preset toggles** — a Presets tab of opinionated "common targets" you can
+  tick to **close** or untick to **keep** (Game Bar, Cortana, Widgets, Teams,
+  Skype, Adobe CC, Office tasks, OneDrive, Phone Link, Spotify, Edge). A preset
+  overrides the built-in lists either way, so you decide what some people like
+  and others don't.
 - **Custom whitelist & blacklist** for end-task, edited in the GUI and saved
-  between runs (`%USERPROFILE%\.gamemode\config.ini`).
+  between runs (`%USERPROFILE%\.gamemode\config.ini`) — with a **"Pick from
+  running tasks" picker** (a checkbox list of live processes) so you never have
+  to type exe names.
+- **Temporary by design / restore on OFF** — GameMode only *stops* and *closes*
+  things while ON; it **never** disables anything permanently (no startup or
+  service-start-type changes). When you turn it **OFF** it can **restart the
+  services it stopped** and optionally **reopen the apps it closed**.
 - **Built-in knowledge** of common bloatware (Adobe Creative Cloud helpers,
   updaters, vendor tray apps), Windows telemetry tasks (CompatTelRunner,
   DeviceCensus, …), game launchers, **anti-cheats**, Discord and the essential
@@ -37,7 +48,9 @@ closing them). Flip it **OFF** and everything is left alone.
   closes **everything else**.
 - **Optional Windows service sweeping** in Risk/Nuclear via the Service Control
   Manager (non-essential, stoppable services only — covers telemetry services
-  like DiagTrack, DoSvc, SysMain, WerSvc, PcaSvc, CDPSvc, MapsBroker; needs admin).
+  like DiagTrack, DoSvc, SysMain, WerSvc, PcaSvc, CDPSvc, MapsBroker; needs
+  admin). Services are only **stopped** (temporary) and are restarted on OFF —
+  their start type is never changed to disabled.
 - **Process viewer** — sortable ListView (Process / PID / RAM / Fate) with a
   live "would-be-closed" preview, plus **manual "Kill selected"** and one-click
   **send-to-whitelist / send-to-blacklist**.

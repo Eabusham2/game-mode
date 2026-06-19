@@ -28,4 +28,20 @@ int namelist_contains(const NameList *list, const char *name_lower);
 /* True if any list entry occurs as a substring of name_lower. */
 int namelist_substr(const NameList *list, const char *name_lower);
 
+/* ---------------------------------------------------------------- presets --
+ * Opinionated "common targets" the user can toggle as a preset. When a preset
+ * is ON its programs are force-closed (like the blacklist); when OFF its
+ * programs are force-kept (like the whitelist), overriding the curated lists.
+ * This lets people keep things some users like (OneDrive, Spotify, Edge) and
+ * remove things others dislike (Game Bar, Cortana, Widgets). */
+typedef struct {
+    const char *key;       /* stable id / INI key */
+    const char *label;     /* GUI checkbox label   */
+    int         default_on;/* 1 = close by default */
+    NameList    names;     /* affected process names (lower-case) */
+} Preset;
+
+extern const Preset PRESETS[];
+extern const int    PRESET_COUNT;
+
 #endif /* KNOWN_LISTS_H */

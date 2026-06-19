@@ -28,6 +28,7 @@ typedef struct {
     DWORD  ppid;
     char   name[260];    /* original case */
     char   lname[260];   /* lower-case    */
+    char   path[MAX_PATH];  /* original-case full image path ("" if unknown) */
     char   lpath[MAX_PATH]; /* lower-case full image path ("" if unknown) */
     int    self;         /* part of GameMode's own process tree */
     int    has_window;   /* owns a visible top-level window */
@@ -129,6 +130,7 @@ static int proclist_capture(ProcList *pl)
             en->ppid = pe.th32ParentProcessID;
             en->self = 0;
             en->mem = 0;
+            en->path[0] = '\0';
             en->lpath[0] = '\0';
             lstrcpynA(en->name, pe.szExeFile, sizeof(en->name));
             str_lower_copy(en->lname, sizeof(en->lname), en->name);
@@ -143,8 +145,10 @@ static int proclist_capture(ProcList *pl)
                 char path[MAX_PATH];
                 DWORD sz = sizeof(path);
                 PROCESS_MEMORY_COUNTERS pmc;
-                if (QueryFullProcessImageNameA(h, 0, path, &sz))
+                if (QueryFullProcessImageNameA(h, 0, path, &sz)) {
+                    lstrcpynA(en->path, path, sizeof(en->path));
                     str_lower_copy(en->lpath, sizeof(en->lpath), path);
+                }
                 if (GetProcessMemoryInfo(h, &pmc, sizeof(pmc)))
                     en->mem = pmc.WorkingSetSize;
                 CloseHandle(h);
@@ -252,12 +256,26 @@ static int heuristic_junk(const Engine *e, const ProcEntry *p)
     return 0;
 }
 
+/* Preset override: +1 = a preset says close this, -1 = a preset says keep it,
+ * 0 = no preset references this name. */
+static int preset_verdict(const Engine *e, const char *lname)
+{
+    int i;
+    for (i = 0; i < PRESET_COUNT && i < MAX_PRESETS; ++i)
+        if (namelist_contains(&PRESETS[i].names, lname))
+            return e->cfg->presets[i] ? 1 : -1;
+    return 0;
+}
+
 /* Decide whether a (non hard-protected) process should be terminated. */
 static int should_kill(const Engine *e, const ProcEntry *p)
 {
     const char *lname = p->lname;
+    int pv = preset_verdict(e, lname);
 
+    if (pv < 0) return 0;                                       /* preset: keep */
     if (strlist_contains(&e->cfg->blacklist, lname)) return 1;  /* user wins */
+    if (pv > 0) return 1;                                       /* preset: close */
 
     switch (e->cfg->mode) {
     case MODE_SMART:
@@ -367,6 +385,7 @@ static long sweep_services(Engine *e, int dry)
                 SERVICE_STATUS st;
                 if (ControlService(h, SERVICE_CONTROL_STOP, &st)) {
                     engine_log(e, LOG_KILL, "Stopped service '%s'", lname);
+                    strlist_add(&e->stopped_services, lname);  /* for restore-on-OFF */
                     ++stopped;
                 } else {
                     engine_log(e, LOG_WARN, "Could not stop service '%s'", lname);
@@ -405,7 +424,13 @@ long engine_scan_once(Engine *e)
                        p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)));
             continue;
         }
-        if (terminate_pid(e, p)) { ++killed; freed += p->mem; }
+        if (terminate_pid(e, p)) {
+            ++killed;
+            freed += p->mem;
+            /* remember windowed apps so "reopen on OFF" can restore them */
+            if (p->has_window && p->path[0])
+                strlist_add(&e->closed_paths, p->path);
+        }
     }
     proclist_free(&pl);
 
@@ -450,6 +475,8 @@ void engine_init(Engine *e, Config *cfg, HWND notify)
     e->notify = notify;
     e->stop_evt = CreateEventA(NULL, TRUE, FALSE, NULL); /* manual reset */
     InitializeCriticalSection(&e->lock);
+    strlist_init(&e->stopped_services);
+    strlist_init(&e->closed_paths);
 }
 
 void engine_destroy(Engine *e)
@@ -457,6 +484,55 @@ void engine_destroy(Engine *e)
     engine_stop(e);
     if (e->stop_evt) CloseHandle(e->stop_evt);
     DeleteCriticalSection(&e->lock);
+    strlist_free(&e->stopped_services);
+    strlist_free(&e->closed_paths);
+}
+
+/* Reverse this session's temporary changes: restart stopped services and
+ * (optionally) reopen closed windowed apps. Called when the user turns OFF. */
+void engine_restore(Engine *e)
+{
+    int restored = 0, launched = 0, i;
+
+    if (e->cfg->restore_services && e->stopped_services.count > 0) {
+        SC_HANDLE scm = OpenSCManagerA(NULL, NULL, SC_MANAGER_CONNECT);
+        if (scm) {
+            for (i = 0; i < e->stopped_services.count; ++i) {
+                SC_HANDLE h = OpenServiceA(scm, e->stopped_services.items[i], SERVICE_START);
+                if (h) {
+                    if (StartServiceA(h, 0, NULL)) {
+                        engine_log(e, LOG_INFO, "Restored service '%s'",
+                                   e->stopped_services.items[i]);
+                        ++restored;
+                    }
+                    CloseServiceHandle(h);
+                }
+            }
+            CloseServiceHandle(scm);
+        }
+    }
+
+    if (e->cfg->relaunch_apps && e->closed_paths.count > 0) {
+        for (i = 0; i < e->closed_paths.count; ++i) {
+            STARTUPINFOA si;
+            PROCESS_INFORMATION pi;
+            char cmd[MAX_PATH + 4];
+            ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
+            ZeroMemory(&pi, sizeof(pi));
+            wsprintfA(cmd, "\"%s\"", e->closed_paths.items[i]);
+            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+                engine_log(e, LOG_INFO, "Reopened %s", e->closed_paths.items[i]);
+                CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
+                ++launched;
+            }
+        }
+    }
+
+    strlist_clear(&e->stopped_services);
+    strlist_clear(&e->closed_paths);
+    if (restored || launched)
+        engine_log(e, LOG_INFO, "Restore complete: %d service(s), %d app(s).",
+                   restored, launched);
 }
 
 int engine_running(const Engine *e) { return e->running != 0; }
@@ -481,6 +557,7 @@ void engine_stop(Engine *e)
         e->thread = NULL;
     }
     e->running = 0;
+    engine_restore(e);   /* temporary by design: undo this session's changes */
     engine_log(e, LOG_INFO, "Engine stopped.");
 }
 

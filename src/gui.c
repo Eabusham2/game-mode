@@ -41,10 +41,17 @@ static NOTIFYICONDATAA g_nid;
 /* control handles we need to touch later */
 static HWND h_tab, h_toggle, h_status, h_modedesc, h_track, h_interval;
 static HWND h_chk_dry, h_chk_svc, h_chk_heur, h_chk_tray, h_chk_startup, h_chk_notify;
+static HWND h_chk_restore, h_chk_relaunch;
 static HWND h_stats, h_log;
 static HWND h_wl_list, h_wl_edit, h_bl_list, h_bl_edit;
 static HWND h_proc_list, h_proc_info;
 static HWND h_radio[MODE_COUNT];
+static HWND h_preset[MAX_PRESETS];
+
+/* task-picker popup state */
+static HWND     g_pick_hwnd, g_pick_lv;
+static StrList *g_pick_dst;
+static HWND     g_pick_dst_list;
 
 /* ---- process table backing store (Processes tab) ------------------------ */
 typedef struct { char name[260]; DWORD pid; unsigned long mem; int doomed; } ProcRow;
@@ -54,15 +61,22 @@ static int g_sort_col = 2;     /* default: RAM */
 static int g_sort_dir = -1;    /* descending  */
 
 /* ---- page membership (for show/hide) ------------------------------------ */
-static HWND g_page[4][28];
-static int  g_page_n[4];
+#define PAGE_COUNT      5
+#define PAGE_DASHBOARD  0
+#define PAGE_PRESETS    1
+#define PAGE_WHITELIST  2
+#define PAGE_BLACKLIST  3
+#define PAGE_PROCESSES  4
+
+static HWND g_page[PAGE_COUNT][40];
+static int  g_page_n[PAGE_COUNT];
 
 static void page_add(int page, HWND h) { g_page[page][g_page_n[page]++] = h; }
 
 static void show_page(int idx)
 {
     int p, i;
-    for (p = 0; p < 4; ++p)
+    for (p = 0; p < PAGE_COUNT; ++p)
         for (i = 0; i < g_page_n[p]; ++i)
             ShowWindow(g_page[p][i], p == idx ? SW_SHOW : SW_HIDE);
 }
@@ -422,7 +436,8 @@ static void build_ui(void)
 {
     int i;
     TCITEMA tie;
-    const char *tabs[4] = { "Dashboard", "Whitelist", "Blacklist", "Processes" };
+    const char *tabs[PAGE_COUNT] = { "Dashboard", "Presets", "Whitelist",
+                                     "Blacklist", "Processes" };
 
     /* header (always visible) */
     {
@@ -435,7 +450,7 @@ static void build_ui(void)
     h_tab = mk(WC_TABCONTROLA, "", 0, 12, 46, CLIENT_W - 24, CLIENT_H - 56, IDC_TAB);
     ShowWindow(h_tab, SW_SHOW);
     tie.mask = TCIF_TEXT;
-    for (i = 0; i < 4; ++i) {
+    for (i = 0; i < PAGE_COUNT; ++i) {
         tie.pszText = (char *)tabs[i];
         SendMessageA(h_tab, TCM_INSERTITEMA, (WPARAM)i, (LPARAM)&tie);
     }
@@ -486,8 +501,33 @@ static void build_ui(void)
     SendMessageA(h_log, EM_EXLIMITTEXT, 0, (LPARAM)0x100000);
     page_add(0, h_log);
 
+    /* =================== PRESETS =================== */
+    page_add(PAGE_PRESETS, mk("BUTTON", "When you turn GameMode OFF",
+        BS_GROUPBOX, PX, 82, 770, 92, -1));
+    page_add(PAGE_PRESETS, mk("STATIC",
+        "GameMode is temporary by design - it only stops/closes things while ON "
+        "and never disables anything permanently (no startup changes).",
+        SS_LEFT, PX + 15, 104, 740, 32, -1));
+    h_chk_restore = mk_check("Restart services I stopped",
+                             PX + 15, 142, 360, IDC_CHK_RESTORE);
+    h_chk_relaunch = mk_check("Reopen apps I closed (best effort)",
+                              PX + 390, 142, 360, IDC_CHK_RELAUNCH);
+    page_add(PAGE_PRESETS, h_chk_restore);
+    page_add(PAGE_PRESETS, h_chk_relaunch);
+
+    page_add(PAGE_PRESETS, mk("STATIC",
+        "Common targets - tick to CLOSE, untick to KEEP (overrides the lists):",
+        SS_LEFT, PX, 186, 740, 20, -1));
+    for (i = 0; i < PRESET_COUNT && i < MAX_PRESETS; ++i) {
+        int col = i % 2, row = i / 2;
+        int x = PX + 15 + col * 380;
+        int y = 212 + row * 28;
+        h_preset[i] = mk_check(PRESETS[i].label, x, y, 365, IDC_PRESET_BASE + i);
+        page_add(PAGE_PRESETS, h_preset[i]);
+    }
+
     /* =================== WHITELIST =================== */
-    page_add(1, mk("STATIC",
+    page_add(PAGE_WHITELIST, mk("STATIC",
         "Processes here are NEVER closed, in any mode (in addition to built-in "
         "OS and anti-cheat protections). Use exe names, e.g. mygame.exe",
         SS_LEFT, PX, 85, 770, 40, IDC_WL_INTRO));
@@ -495,14 +535,15 @@ static void build_ui(void)
         WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL,
         PX, 130, 770, 350, g_hwnd, (HMENU)(INT_PTR)IDC_WL_LIST, g_hinst, NULL);
     SendMessageA(h_wl_list, WM_SETFONT, (WPARAM)g_font, TRUE);
-    page_add(1, h_wl_list);
-    h_wl_edit = mk("EDIT", "", ES_AUTOHSCROLL | WS_BORDER, PX, 490, 500, 26, IDC_WL_EDIT);
-    page_add(1, h_wl_edit);
-    page_add(1, mk("BUTTON", "Add", BS_PUSHBUTTON, PX + 510, 489, 110, 28, IDC_WL_ADD));
-    page_add(1, mk("BUTTON", "Remove selected", BS_PUSHBUTTON, PX + 630, 489, 140, 28, IDC_WL_REMOVE));
+    page_add(PAGE_WHITELIST, h_wl_list);
+    h_wl_edit = mk("EDIT", "", ES_AUTOHSCROLL | WS_BORDER, PX, 490, 350, 26, IDC_WL_EDIT);
+    page_add(PAGE_WHITELIST, h_wl_edit);
+    page_add(PAGE_WHITELIST, mk("BUTTON", "Add", BS_PUSHBUTTON, PX + 360, 489, 80, 28, IDC_WL_ADD));
+    page_add(PAGE_WHITELIST, mk("BUTTON", "Pick from running tasks", BS_PUSHBUTTON, PX + 450, 489, 180, 28, IDC_WL_PICK));
+    page_add(PAGE_WHITELIST, mk("BUTTON", "Remove", BS_PUSHBUTTON, PX + 640, 489, 130, 28, IDC_WL_REMOVE));
 
     /* =================== BLACKLIST =================== */
-    page_add(2, mk("STATIC",
+    page_add(PAGE_BLACKLIST, mk("STATIC",
         "Processes here are ALWAYS closed while GameMode is ON, in every mode "
         "(critical OS processes stay protected for safety).",
         SS_LEFT, PX, 85, 770, 40, IDC_BL_INTRO));
@@ -510,20 +551,21 @@ static void build_ui(void)
         WS_CHILD | WS_VSCROLL | LBS_NOTIFY | LBS_EXTENDEDSEL,
         PX, 130, 770, 350, g_hwnd, (HMENU)(INT_PTR)IDC_BL_LIST, g_hinst, NULL);
     SendMessageA(h_bl_list, WM_SETFONT, (WPARAM)g_font, TRUE);
-    page_add(2, h_bl_list);
-    h_bl_edit = mk("EDIT", "", ES_AUTOHSCROLL | WS_BORDER, PX, 490, 500, 26, IDC_BL_EDIT);
-    page_add(2, h_bl_edit);
-    page_add(2, mk("BUTTON", "Add", BS_PUSHBUTTON, PX + 510, 489, 110, 28, IDC_BL_ADD));
-    page_add(2, mk("BUTTON", "Remove selected", BS_PUSHBUTTON, PX + 630, 489, 140, 28, IDC_BL_REMOVE));
+    page_add(PAGE_BLACKLIST, h_bl_list);
+    h_bl_edit = mk("EDIT", "", ES_AUTOHSCROLL | WS_BORDER, PX, 490, 350, 26, IDC_BL_EDIT);
+    page_add(PAGE_BLACKLIST, h_bl_edit);
+    page_add(PAGE_BLACKLIST, mk("BUTTON", "Add", BS_PUSHBUTTON, PX + 360, 489, 80, 28, IDC_BL_ADD));
+    page_add(PAGE_BLACKLIST, mk("BUTTON", "Pick from running tasks", BS_PUSHBUTTON, PX + 450, 489, 180, 28, IDC_BL_PICK));
+    page_add(PAGE_BLACKLIST, mk("BUTTON", "Remove", BS_PUSHBUTTON, PX + 640, 489, 130, 28, IDC_BL_REMOVE));
 
     /* =================== PROCESSES =================== */
-    page_add(3, mk("BUTTON", "Refresh", BS_PUSHBUTTON, PX, 85, 110, 28, IDC_PROC_REFRESH));
-    page_add(3, mk("BUTTON", "Preview kills", BS_PUSHBUTTON, PX + 120, 85, 120, 28, IDC_PROC_PREVIEW));
-    page_add(3, mk("BUTTON", "Kill selected", BS_PUSHBUTTON, PX + 250, 85, 120, 28, IDC_PROC_KILLSEL));
-    page_add(3, mk("BUTTON", "-> Whitelist", BS_PUSHBUTTON, PX + 380, 85, 120, 28, IDC_PROC_TOWL));
-    page_add(3, mk("BUTTON", "-> Blacklist", BS_PUSHBUTTON, PX + 510, 85, 120, 28, IDC_PROC_TOBL));
+    page_add(PAGE_PROCESSES, mk("BUTTON", "Refresh", BS_PUSHBUTTON, PX, 85, 110, 28, IDC_PROC_REFRESH));
+    page_add(PAGE_PROCESSES, mk("BUTTON", "Preview kills", BS_PUSHBUTTON, PX + 120, 85, 120, 28, IDC_PROC_PREVIEW));
+    page_add(PAGE_PROCESSES, mk("BUTTON", "Kill selected", BS_PUSHBUTTON, PX + 250, 85, 120, 28, IDC_PROC_KILLSEL));
+    page_add(PAGE_PROCESSES, mk("BUTTON", "-> Whitelist", BS_PUSHBUTTON, PX + 380, 85, 120, 28, IDC_PROC_TOWL));
+    page_add(PAGE_PROCESSES, mk("BUTTON", "-> Blacklist", BS_PUSHBUTTON, PX + 510, 85, 120, 28, IDC_PROC_TOBL));
     h_proc_info = mk("STATIC", "", SS_LEFT, PX, 120, 770, 20, IDC_PROC_INFO);
-    page_add(3, h_proc_info);
+    page_add(PAGE_PROCESSES, h_proc_info);
 
     h_proc_list = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "",
         WS_CHILD | LVS_REPORT | LVS_SHOWSELALWAYS,
@@ -535,7 +577,7 @@ static void build_ui(void)
     add_lv_column(1, "PID", 70, LVCFMT_RIGHT);
     add_lv_column(2, "RAM (MB)", 90, LVCFMT_RIGHT);
     add_lv_column(3, "Under current mode", 200, LVCFMT_LEFT);
-    page_add(3, h_proc_list);
+    page_add(PAGE_PROCESSES, h_proc_list);
 }
 
 /* ---- apply persisted settings to widgets -------------------------------- */
@@ -551,6 +593,14 @@ static void apply_cfg_to_ui(void)
     SendMessageA(h_chk_tray, BM_SETCHECK, g_cfg.minimize_to_tray ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageA(h_chk_startup, BM_SETCHECK, g_cfg.run_at_startup ? BST_CHECKED : BST_UNCHECKED, 0);
     SendMessageA(h_chk_notify, BM_SETCHECK, g_cfg.notifications ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageA(h_chk_restore, BM_SETCHECK, g_cfg.restore_services ? BST_CHECKED : BST_UNCHECKED, 0);
+    SendMessageA(h_chk_relaunch, BM_SETCHECK, g_cfg.relaunch_apps ? BST_CHECKED : BST_UNCHECKED, 0);
+    {
+        int i;
+        for (i = 0; i < PRESET_COUNT && i < MAX_PRESETS; ++i)
+            SendMessageA(h_preset[i], BM_SETCHECK,
+                         g_cfg.presets[i] ? BST_CHECKED : BST_UNCHECKED, 0);
+    }
     iv = (int)(g_cfg.scan_interval + 0.5);
     SendMessageA(h_track, TBM_SETPOS, TRUE, iv);
     wsprintfA(b, "every %ds", iv);
@@ -595,6 +645,135 @@ static void show_tray_menu(void)
     TrackPopupMenu(menu, TPM_RIGHTBUTTON, pt.x, pt.y, 0, g_hwnd, NULL);
     PostMessageA(g_hwnd, WM_NULL, 0, 0);
     DestroyMenu(menu);
+}
+
+/* ---- task picker popup --------------------------------------------------- */
+static void pick_fill_cb(const char *name, unsigned long pid,
+                         unsigned long mem_mb, int doomed, void *user)
+{
+    (void)doomed; (void)user;
+    rows_add(name, (DWORD)pid, mem_mb, 0);
+}
+
+static void picker_populate(void)
+{
+    int i, sc = g_sort_col, sd = g_sort_dir;
+    char buf[64];
+    LVITEMA it;
+
+    rows_clear();
+    engine_list_running(&g_engine, pick_fill_cb, NULL);
+    g_sort_col = 0; g_sort_dir = 1;                 /* sort by name for picking */
+    qsort(g_rows, (size_t)g_rows_n, sizeof(ProcRow), cmp_rows);
+    g_sort_col = sc; g_sort_dir = sd;
+
+    SendMessageA(g_pick_lv, LVM_DELETEALLITEMS, 0, 0);
+    for (i = 0; i < g_rows_n; ++i) {
+        ZeroMemory(&it, sizeof(it));
+        it.mask = LVIF_TEXT; it.iItem = i; it.pszText = g_rows[i].name;
+        SendMessageA(g_pick_lv, LVM_INSERTITEMA, 0, (LPARAM)&it);
+        wsprintfA(buf, "%lu", g_rows[i].pid);
+        ListView_SetItemText(g_pick_lv, i, 1, buf);
+        wsprintfA(buf, "%lu", g_rows[i].mem);
+        ListView_SetItemText(g_pick_lv, i, 2, buf);
+    }
+}
+
+static void close_picker(void)
+{
+    EnableWindow(g_hwnd, TRUE);
+    if (g_pick_hwnd) {
+        HWND h = g_pick_hwnd;
+        g_pick_hwnd = NULL; g_pick_lv = NULL;
+        DestroyWindow(h);
+    }
+    SetForegroundWindow(g_hwnd);
+}
+
+static LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
+{
+    switch (msg) {
+    case WM_COMMAND: {
+        int id = LOWORD(wp);
+        if (id == IDC_PICK_ADD) {
+            int n = (int)SendMessageA(g_pick_lv, LVM_GETITEMCOUNT, 0, 0);
+            int i, added = 0;
+            char nm[260];
+            for (i = 0; i < n; ++i) {
+                if (ListView_GetCheckState(g_pick_lv, i)) {
+                    ListView_GetItemText(g_pick_lv, i, 0, nm, (int)sizeof(nm));
+                    added += strlist_add(g_pick_dst, nm);
+                }
+            }
+            if (added) {
+                reload_listbox(g_pick_dst_list, g_pick_dst);
+                save_cfg();
+                log_append(LOG_INFO, "Added picked task(s) to list.");
+            }
+            close_picker();
+        } else if (id == IDC_PICK_CANCEL) {
+            close_picker();
+        }
+        return 0;
+    }
+    case WM_CLOSE:
+        close_picker();
+        return 0;
+    }
+    return DefWindowProcA(hwnd, msg, wp, lp);
+}
+
+static void open_picker(StrList *dst, HWND dst_list, const char *title)
+{
+    RECT rc;
+    int w = 560, h = 470, x, y;
+    LVCOLUMNA c;
+    HWND s, b1, b2;
+
+    if (g_pick_hwnd) return;
+    g_pick_dst = dst;
+    g_pick_dst_list = dst_list;
+
+    GetWindowRect(g_hwnd, &rc);
+    x = rc.left + ((rc.right - rc.left) - w) / 2;
+    y = rc.top + ((rc.bottom - rc.top) - h) / 2;
+    g_pick_hwnd = CreateWindowExA(WS_EX_DLGMODALFRAME, "GameModePicker", title,
+        WS_POPUP | WS_CAPTION | WS_SYSMENU, x, y, w, h, g_hwnd, NULL, g_hinst, NULL);
+    if (!g_pick_hwnd) return;
+
+    s = CreateWindowExA(0, "STATIC",
+        "Tick the running tasks you want, then click Add checked:",
+        WS_CHILD | WS_VISIBLE | SS_LEFT, 12, 10, 520, 20, g_pick_hwnd, NULL, g_hinst, NULL);
+    SendMessageA(s, WM_SETFONT, (WPARAM)g_font, TRUE);
+
+    g_pick_lv = CreateWindowExA(WS_EX_CLIENTEDGE, WC_LISTVIEWA, "",
+        WS_CHILD | WS_VISIBLE | LVS_REPORT | LVS_SHOWSELALWAYS,
+        12, 36, 520, 350, g_pick_hwnd, (HMENU)(INT_PTR)IDC_PICK_LV, g_hinst, NULL);
+    SendMessageA(g_pick_lv, WM_SETFONT, (WPARAM)g_font, TRUE);
+    SendMessageA(g_pick_lv, LVM_SETEXTENDEDLISTVIEWSTYLE, 0,
+                 (LPARAM)(LVS_EX_CHECKBOXES | LVS_EX_FULLROWSELECT | LVS_EX_GRIDLINES));
+    ZeroMemory(&c, sizeof(c));
+    c.mask = LVCF_TEXT | LVCF_WIDTH | LVCF_FMT;
+    c.fmt = LVCFMT_LEFT;  c.cx = 300; c.pszText = (char *)"Process";
+    SendMessageA(g_pick_lv, LVM_INSERTCOLUMNA, 0, (LPARAM)&c);
+    c.fmt = LVCFMT_RIGHT; c.cx = 80;  c.pszText = (char *)"PID";
+    SendMessageA(g_pick_lv, LVM_INSERTCOLUMNA, 1, (LPARAM)&c);
+    c.cx = 90; c.pszText = (char *)"RAM (MB)";
+    SendMessageA(g_pick_lv, LVM_INSERTCOLUMNA, 2, (LPARAM)&c);
+
+    b1 = CreateWindowExA(0, "BUTTON", "Add checked",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON | BS_DEFPUSHBUTTON,
+        300, 398, 110, 30, g_pick_hwnd, (HMENU)(INT_PTR)IDC_PICK_ADD, g_hinst, NULL);
+    SendMessageA(b1, WM_SETFONT, (WPARAM)g_font, TRUE);
+    b2 = CreateWindowExA(0, "BUTTON", "Cancel",
+        WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
+        420, 398, 110, 30, g_pick_hwnd, (HMENU)(INT_PTR)IDC_PICK_CANCEL, g_hinst, NULL);
+    SendMessageA(b2, WM_SETFONT, (WPARAM)g_font, TRUE);
+
+    picker_populate();
+    EnableWindow(g_hwnd, FALSE);
+    ShowWindow(g_pick_hwnd, SW_SHOW);
+    SetForegroundWindow(g_pick_hwnd);
 }
 
 /* ---- window procedure ---------------------------------------------------- */
@@ -662,16 +841,28 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (id == IDC_CHK_STARTUP && code == BN_CLICKED) {
             g_cfg.run_at_startup = (int)SendMessageA(h_chk_startup, BM_GETCHECK, 0, 0) == BST_CHECKED;
             sync_startup(g_cfg.run_at_startup); save_cfg();
+        } else if (id == IDC_CHK_RESTORE && code == BN_CLICKED) {
+            g_cfg.restore_services = (int)SendMessageA(h_chk_restore, BM_GETCHECK, 0, 0) == BST_CHECKED; save_cfg();
+        } else if (id == IDC_CHK_RELAUNCH && code == BN_CLICKED) {
+            g_cfg.relaunch_apps = (int)SendMessageA(h_chk_relaunch, BM_GETCHECK, 0, 0) == BST_CHECKED; save_cfg();
+        } else if (id >= IDC_PRESET_BASE && id < IDC_PRESET_BASE + PRESET_COUNT && code == BN_CLICKED) {
+            int pi = id - IDC_PRESET_BASE;
+            g_cfg.presets[pi] = (int)SendMessageA(h_preset[pi], BM_GETCHECK, 0, 0) == BST_CHECKED;
+            save_cfg();
         } else if (id == IDC_CLEARLOG && code == BN_CLICKED) {
             SetWindowTextA(h_log, "");
         } else if (id == IDC_WL_ADD && code == BN_CLICKED) {
             add_from_edit(&g_cfg.whitelist, h_wl_edit, h_wl_list);
         } else if (id == IDC_WL_REMOVE && code == BN_CLICKED) {
             remove_selected(&g_cfg.whitelist, h_wl_list);
+        } else if (id == IDC_WL_PICK && code == BN_CLICKED) {
+            open_picker(&g_cfg.whitelist, h_wl_list, "Pick tasks to WHITELIST (never close)");
         } else if (id == IDC_BL_ADD && code == BN_CLICKED) {
             add_from_edit(&g_cfg.blacklist, h_bl_edit, h_bl_list);
         } else if (id == IDC_BL_REMOVE && code == BN_CLICKED) {
             remove_selected(&g_cfg.blacklist, h_bl_list);
+        } else if (id == IDC_BL_PICK && code == BN_CLICKED) {
+            open_picker(&g_cfg.blacklist, h_bl_list, "Pick tasks to BLACKLIST (always close)");
         } else if (id == IDC_PROC_REFRESH && code == BN_CLICKED) {
             refresh_processes(0);
         } else if (id == IDC_PROC_PREVIEW && code == BN_CLICKED) {
@@ -717,7 +908,7 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (nm->idFrom == IDC_TAB && nm->code == (UINT)TCN_SELCHANGE) {
             int sel = (int)SendMessageA(h_tab, TCM_GETCURSEL, 0, 0);
             show_page(sel);
-            if (sel == 3) refresh_processes(0);
+            if (sel == PAGE_PROCESSES) refresh_processes(0);
         } else if (nm->idFrom == IDC_PROC_LIST && nm->code == (UINT)LVN_COLUMNCLICK) {
             LPNMLISTVIEW lv = (LPNMLISTVIEW)lp;
             if (lv->iSubItem == g_sort_col) g_sort_dir = -g_sort_dir;
@@ -867,6 +1058,11 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     wc.hIconSm = g_icon_small ? g_icon_small : wc.hIcon;
     if (!RegisterClassExA(&wc)) return 1;
 
+    /* task-picker popup class (shares fonts/icon, own window proc) */
+    wc.lpfnWndProc = PickerProc;
+    wc.lpszClassName = "GameModePicker";
+    RegisterClassExA(&wc);
+
     r.left = 0; r.top = 0; r.right = CLIENT_W; r.bottom = CLIENT_H;
     AdjustWindowRect(&r, style, FALSE);
 
@@ -881,6 +1077,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     UpdateWindow(hwnd);
 
     while (GetMessageA(&m, NULL, 0, 0) > 0) {
+        if (g_pick_hwnd && IsDialogMessageA(g_pick_hwnd, &m)) continue;
         if (IsDialogMessageA(g_hwnd, &m)) continue;
         TranslateMessage(&m);
         DispatchMessageA(&m);

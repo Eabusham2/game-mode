@@ -1,6 +1,7 @@
 /* config.c - settings persistence (INI) and the StrList helper type. */
 #include "config.h"
 #include "gamemode.h"
+#include "known_lists.h"
 #include <stdlib.h>
 #include <string.h>
 #include <shlobj.h>
@@ -131,6 +132,7 @@ static void config_path(char *out, size_t size)
 /* ------------------------------------------------------------------ config */
 void config_defaults(Config *c)
 {
+    int i;
     c->mode = MODE_SMART;
     c->scan_interval = 3.0;
     c->dry_run = 0;
@@ -140,6 +142,10 @@ void config_defaults(Config *c)
     c->minimize_to_tray = 1;
     c->run_at_startup = 0;
     c->notifications = 1;
+    c->restore_services = 1;     /* temporary by design: restore on OFF */
+    c->relaunch_apps = 0;
+    for (i = 0; i < MAX_PRESETS; ++i)
+        c->presets[i] = (i < PRESET_COUNT) ? PRESETS[i].default_on : 0;
     strlist_init(&c->whitelist);
     strlist_init(&c->blacklist);
 }
@@ -169,6 +175,15 @@ void config_load(Config *c)
     c->minimize_to_tray = GetPrivateProfileIntA("general", "minimize_to_tray", 1, path) ? 1 : 0;
     c->run_at_startup = GetPrivateProfileIntA("general", "run_at_startup", 0, path) ? 1 : 0;
     c->notifications = GetPrivateProfileIntA("general", "notifications", 1, path) ? 1 : 0;
+    c->restore_services = GetPrivateProfileIntA("general", "restore_services", 1, path) ? 1 : 0;
+    c->relaunch_apps = GetPrivateProfileIntA("general", "relaunch_apps", 0, path) ? 1 : 0;
+
+    {
+        int i;
+        for (i = 0; i < PRESET_COUNT && i < MAX_PRESETS; ++i)
+            c->presets[i] = GetPrivateProfileIntA("presets", PRESETS[i].key,
+                                                  PRESETS[i].default_on, path) ? 1 : 0;
+    }
 
     GetPrivateProfileStringA("lists", "whitelist", "", buf, sizeof(buf), path);
     strlist_split(&c->whitelist, buf);
@@ -194,6 +209,15 @@ void config_save(const Config *c)
     WritePrivateProfileStringA("general", "minimize_to_tray", c->minimize_to_tray ? "1" : "0", path);
     WritePrivateProfileStringA("general", "run_at_startup", c->run_at_startup ? "1" : "0", path);
     WritePrivateProfileStringA("general", "notifications", c->notifications ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "restore_services", c->restore_services ? "1" : "0", path);
+    WritePrivateProfileStringA("general", "relaunch_apps", c->relaunch_apps ? "1" : "0", path);
+
+    {
+        int i;
+        for (i = 0; i < PRESET_COUNT && i < MAX_PRESETS; ++i)
+            WritePrivateProfileStringA("presets", PRESETS[i].key,
+                                       c->presets[i] ? "1" : "0", path);
+    }
 
     strlist_join(&c->whitelist, buf, sizeof(buf));
     WritePrivateProfileStringA("lists", "whitelist", buf, path);

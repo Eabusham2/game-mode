@@ -16,6 +16,8 @@ int  strlist_add(StrList *l, const char *name);   /* lower-cases; 1 if added */
 void strlist_remove(StrList *l, const char *name_lower);
 void strlist_clear(StrList *l);
 
+#define MAX_PRESETS 32
+
 typedef struct {
     int     mode;             /* MODE_SMART..MODE_NUCLEAR */
     double  scan_interval;    /* seconds, clamped 1..60   */
@@ -26,6 +28,9 @@ typedef struct {
     int     minimize_to_tray; /* hide to tray on minimize/close */
     int     run_at_startup;   /* register in HKCU..\Run */
     int     notifications;    /* show tray balloons when closing in background */
+    int     restore_services; /* restart services we stopped, on toggle OFF */
+    int     relaunch_apps;    /* reopen windowed apps we closed, on toggle OFF */
+    int     presets[MAX_PRESETS]; /* per-preset on/off, indexed like PRESETS[] */
     StrList whitelist;        /* never kill these */
     StrList blacklist;        /* always kill these */
 } Config;

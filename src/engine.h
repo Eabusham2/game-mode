@@ -21,6 +21,9 @@ typedef struct {
     volatile LONG  running;
     Stats          stats;
     CRITICAL_SECTION lock;
+    /* session undo state - everything here is TEMPORARY and reversed on OFF */
+    StrList        stopped_services; /* service names we stopped this session  */
+    StrList        closed_paths;     /* image paths of windowed apps we closed  */
 } Engine;
 
 /* Callback used by enumeration helpers (preview / list).
@@ -35,6 +38,10 @@ void engine_destroy(Engine *e);
 void engine_start(Engine *e);
 void engine_stop(Engine *e);
 int  engine_running(const Engine *e);
+
+/* Reverse this session's temporary changes (restart stopped services, and
+ * optionally reopen closed apps). Invoked automatically by engine_stop. */
+void engine_restore(Engine *e);
 
 /* Run exactly one detection/termination pass (used by the worker thread). */
 long engine_scan_once(Engine *e);
