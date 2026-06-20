@@ -1,0 +1,21 @@
+# Build artifacts
+*.o
+*.obj
+*.res
+*.exe
+*.lib
+*.exp
+*.pdb
+*.ilk
+src/*.o
+
+# GameMode runtime config (machine-specific)
+.gamemode/
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+__pycache__/
+*.pyc

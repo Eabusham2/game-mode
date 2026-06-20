@@ -1,0 +1,86 @@
+name: Build GameMode.exe
+
+on:
+  push:
+    branches: ['**']
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+# Allow the tag-triggered release job to create releases.
+permissions:
+  contents: write
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Fast, reproducible cross-build with MinGW-w64 on Linux. This is the
+  # authoritative artifact (matches the project's verified build path).
+  mingw:
+    name: Cross-build (MinGW / Linux)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install MinGW-w64
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends mingw-w64 make file
+
+      - name: Build
+        run: make CC=x86_64-w64-mingw32-gcc WINDRES=x86_64-w64-mingw32-windres
+
+      - name: Verify it is a 64-bit Windows GUI exe
+        run: |
+          file GameMode.exe
+          file GameMode.exe | grep -q "PE32+ executable (GUI) x86-64"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameMode-windows-x64
+          path: GameMode.exe
+          if-no-files-found: error
+
+  # Native build using the MSVC toolchain via build.bat, to validate that path.
+  msvc:
+    name: Native build (MSVC / Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up MSVC environment
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
+
+      - name: Build
+        shell: cmd
+        run: build.bat
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GameMode-msvc-x64
+          path: GameMode.exe
+          if-no-files-found: error
+
+  # On a version tag (e.g. v3.0.0) publish the exe as a GitHub Release asset.
+  release:
+    name: Publish release
+    needs: [mingw, msvc]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download MSVC build
+        uses: actions/download-artifact@v4
+        with:
+          name: GameMode-msvc-x64
+
+      - name: Create / update release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: GameMode.exe
+          generate_release_notes: true
