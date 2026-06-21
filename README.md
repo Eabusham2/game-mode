@@ -120,11 +120,20 @@ All produce a single self-contained **`GameMode.exe`**.
 
 ### Don't want to build it yourself?
 
-Every push is built by GitHub Actions (`.github/workflows/build.yml`). Grab the
-`GameMode-windows-x64` artifact from the latest green run on the
-[Actions tab](https://github.com/Eabusham2/game-mode-/actions/workflows/build.yml),
-or, on a version tag (`vX.Y.Z`), download `GameMode.exe` from the matching
-[Release](https://github.com/Eabusham2/game-mode-/releases).
+**Download the ready-to-run exe — no login, no unzip:**
+
+➡️ **[`GameMode.exe` (latest build)](https://github.com/Eabusham2/game-mode-/releases/download/latest/GameMode.exe)**
+
+GitHub Actions (`.github/workflows/build.yml`) rebuilds the exe on every push to
+`main` and republishes it to the **["Latest build (rolling)"
+release](https://github.com/Eabusham2/game-mode-/releases/tag/latest)**, so the
+link above always points at the newest binary.
+
+Prefer a pinned version? On a version tag (`vX.Y.Z`) the same workflow publishes
+a matching [versioned Release](https://github.com/Eabusham2/game-mode-/releases).
+You can also grab the raw `GameMode-windows-x64` build artifact from any green
+run on the
+[Actions tab](https://github.com/Eabusham2/game-mode-/actions/workflows/build.yml).
 
 The app icon is generated (no binary committed dependency needed to regenerate):
 ```sh

@@ -7,7 +7,7 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Allow the tag-triggered release job to create releases.
+# Allow the release job to create/update releases (rolling "latest" + tags).
 permissions:
   contents: write
 
@@ -67,11 +67,17 @@ jobs:
           path: GameMode.exe
           if-no-files-found: error
 
-  # On a version tag (e.g. v3.0.0) publish the exe as a GitHub Release asset.
+  # Publish the built exe as a downloadable GitHub Release asset so anyone can
+  # grab a ready-to-run GameMode.exe without logging in, unzipping a CI artifact
+  # or building it themselves. Runs in two situations (never on PRs):
+  #   * push to main  -> updates a rolling "latest" pre-release (always current)
+  #   * push of a v*   -> creates a pinned, versioned release with release notes
   release:
-    name: Publish release
+    name: Publish GameMode.exe
     needs: [mingw, msvc]
-    if: startsWith(github.ref, 'refs/tags/v')
+    if: >-
+      github.event_name == 'push' &&
+      (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
     steps:
       - name: Download MSVC build
@@ -79,7 +85,28 @@ jobs:
         with:
           name: GameMode-msvc-x64
 
-      - name: Create / update release
+      # Rolling build: every push to main (re)publishes GameMode.exe on the
+      # "latest" tag. Stable, login-free download link:
+      #   https://github.com/<owner>/<repo>/releases/download/latest/GameMode.exe
+      - name: Publish rolling "latest" build
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: latest
+          name: Latest build (rolling)
+          prerelease: true
+          files: GameMode.exe
+          body: |
+            Automatically built from the latest commit on `main` (`${{ github.sha }}`).
+
+            **Download:** [`GameMode.exe`](https://github.com/${{ github.repository }}/releases/download/latest/GameMode.exe)
+
+            This rolling build updates on every push to `main`. For a pinned,
+            versioned download instead, use a tagged release below.
+
+      # Pinned release for a version tag (e.g. v3.0.0).
+      - name: Publish versioned release
+        if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
           files: GameMode.exe
