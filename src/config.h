@@ -13,6 +13,8 @@ void strlist_init(StrList *l);
 void strlist_free(StrList *l);
 int  strlist_contains(const StrList *l, const char *name_lower); /* 1/0 */
 int  strlist_add(StrList *l, const char *name);   /* lower-cases; 1 if added */
+int  strlist_add_raw(StrList *l, const char *name); /* keeps case; dedupe ci */
+void strlist_copy(StrList *dst, const StrList *src); /* deep copy (dst cleared) */
 void strlist_remove(StrList *l, const char *name_lower);
 void strlist_clear(StrList *l);
 

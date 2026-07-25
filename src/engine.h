@@ -56,4 +56,10 @@ int  engine_kill_pid(Engine *e, unsigned long pid, const char *name);
 
 void engine_get_stats(Engine *e, Stats *out);
 
+/* Guard shared Config state (whitelist/blacklist) that the GUI thread mutates
+ * while the worker thread may be reading it. GUI mutators wrap edits to
+ * cfg->whitelist / cfg->blacklist in engine_lock/engine_unlock. */
+void engine_lock(Engine *e);
+void engine_unlock(Engine *e);
+
 #endif /* ENGINE_H */

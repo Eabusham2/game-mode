@@ -36,7 +36,9 @@ closing them). Flip it **OFF** and everything is left alone.
 - **Custom whitelist & blacklist** for end-task, edited in the GUI and saved
   between runs (`%USERPROFILE%\.gamemode\config.ini`) — with a **"Pick from
   running tasks" picker** (a checkbox list of live processes) so you never have
-  to type exe names.
+  to type exe names. **Precedence** below the hard-protected tier is
+  **blacklist → presets → mode rules**, so a name you blacklist is always closed
+  even if a preset would keep it.
 - **Temporary by design / restore on OFF** — GameMode only *stops* and *closes*
   things while ON; it **never** disables anything permanently (no startup or
   service-start-type changes). When you turn it **OFF** it can **restart the

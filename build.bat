@@ -8,7 +8,7 @@ rc /nologo /fo resource.res resource.rc
 if errorlevel 1 goto :fail
 
 echo Compiling and linking...
-cl /nologo /O2 /W3 /MT ^
+cl /nologo /O2 /W4 /MT ^
    /DWINVER=0x0601 /D_WIN32_WINNT=0x0601 ^
    /Fe:GameMode.exe ^
    src\known_lists.c src\modes.c src\config.c src\engine.c src\gui.c ^

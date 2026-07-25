@@ -36,6 +36,7 @@ static int      g_really_quit;       /* distinguishes "Exit" from "minimise"  */
 static int      g_tray_added;
 static int      g_warned_tray;       /* showed the "still running" hint once   */
 static int      g_pending_notify;    /* kills queued for a coalesced balloon    */
+static UINT     g_wm_taskbar;         /* "TaskbarCreated" - re-add tray on relaunch */
 static NOTIFYICONDATAA g_nid;
 
 /* control handles we need to touch later */
@@ -151,9 +152,8 @@ static void tray_add(void)
     g_nid.uCallbackMessage = WM_APP_TRAY;
     g_nid.hIcon = g_icon_small ? g_icon_small : g_icon_big;
     lstrcpynA(g_nid.szTip, "GameMode", sizeof(g_nid.szTip));
-    Shell_NotifyIconA(NIM_ADD, &g_nid);
-    g_tray_added = 1;
-    tray_update_tip();
+    g_tray_added = Shell_NotifyIconA(NIM_ADD, &g_nid) ? 1 : 0;
+    if (g_tray_added) tray_update_tip();
 }
 
 static void tray_remove(void)
@@ -190,6 +190,23 @@ static void update_status_ui(void)
     tray_update_tip();
 }
 
+static void log_append(int level, const char *msg);   /* defined below */
+
+/* When switching live into Nuclear (its arm-time confirmation would otherwise
+ * be skipped), warn first. Returns 1 to proceed. */
+static int confirm_mode_change(int new_mode)
+{
+    if (g_engine.running && new_mode == MODE_NUCLEAR && !g_cfg.dry_run) {
+        int r = MessageBoxA(g_hwnd,
+            "Switching to Nuclear while running closes EVERYTHING except Windows "
+            "essentials, anti-cheats, detected games, Discord, GameMode and your "
+            "whitelist - including your browser and open documents.\n\n"
+            "Switch now?", "Switch to Nuclear mode?", MB_OKCANCEL | MB_ICONWARNING);
+        return r == IDOK;
+    }
+    return 1;
+}
+
 static void set_running(int run)
 {
     if (run && !g_engine.running) {
@@ -203,7 +220,9 @@ static void set_running(int run)
             if (r != IDOK) return;
         }
         engine_start(&g_engine);
-        g_running_ui = 1;
+        g_running_ui = g_engine.running ? 1 : 0;   /* thread may fail to start */
+        if (!g_running_ui)
+            log_append(LOG_ERROR, "Could not start the engine (thread creation failed).");
     } else if (!run && g_engine.running) {
         engine_stop(&g_engine);
         g_running_ui = 0;
@@ -371,7 +390,9 @@ static void send_one(const ProcRow *r)
 static void send_selected(StrList *dst, HWND dst_list)
 {
     g_send_dst = dst; g_send_list = dst_list; g_send_added = 0;
+    engine_lock(&g_engine);
     for_each_selected(send_one);
+    engine_unlock(&g_engine);
     if (g_send_added) {
         reload_listbox(dst_list, dst);
         save_cfg();
@@ -396,9 +417,11 @@ static void remove_selected(StrList *l, HWND lb)
     idx = (int *)malloc((size_t)n * sizeof(int));
     if (!idx) return;
     SendMessageA(lb, LB_GETSELITEMS, (WPARAM)n, (LPARAM)idx);
+    engine_lock(&g_engine);
     for (i = n - 1; i >= 0; --i)
         if (SendMessageA(lb, LB_GETTEXT, (WPARAM)idx[i], (LPARAM)buf) != LB_ERR)
             strlist_remove(l, buf);
+    engine_unlock(&g_engine);
     free(idx);
     reload_listbox(lb, l);
     save_cfg();
@@ -407,8 +430,12 @@ static void remove_selected(StrList *l, HWND lb)
 static void add_from_edit(StrList *l, HWND edit, HWND lb)
 {
     char buf[260];
+    int added;
     GetWindowTextA(edit, buf, sizeof(buf));
-    if (buf[0] && strlist_add(l, buf)) {
+    engine_lock(&g_engine);
+    added = buf[0] && strlist_add(l, buf);
+    engine_unlock(&g_engine);
+    if (added) {
         reload_listbox(lb, l);
         save_cfg();
     }
@@ -485,7 +512,7 @@ static void build_ui(void)
     page_add(0, mk("STATIC", "Scan interval:", SS_LEFT, PX + 15, 408, 90, 20, -1));
     h_track = mk(TRACKBAR_CLASSA, "", TBS_HORZ | TBS_AUTOTICKS, PX + 110, 404, 300, 28, IDC_TRACK);
     page_add(0, h_track);
-    SendMessageA(h_track, TBM_SETRANGE, TRUE, MAKELONG(1, 30));
+    SendMessageA(h_track, TBM_SETRANGE, TRUE, MAKELONG(1, 60));
     h_interval = mk("STATIC", "every 3s", SS_LEFT, PX + 420, 408, 120, 20, IDC_INTERVAL_LBL);
     page_add(0, h_interval);
 
@@ -699,12 +726,14 @@ static LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
             int n = (int)SendMessageA(g_pick_lv, LVM_GETITEMCOUNT, 0, 0);
             int i, added = 0;
             char nm[260];
+            engine_lock(&g_engine);
             for (i = 0; i < n; ++i) {
                 if (ListView_GetCheckState(g_pick_lv, i)) {
                     ListView_GetItemText(g_pick_lv, i, 0, nm, (int)sizeof(nm));
                     added += strlist_add(g_pick_dst, nm);
                 }
             }
+            engine_unlock(&g_engine);
             if (added) {
                 reload_listbox(g_pick_dst_list, g_pick_dst);
                 save_cfg();
@@ -779,6 +808,13 @@ static void open_picker(StrList *dst, HWND dst_list, const char *title)
 /* ---- window procedure ---------------------------------------------------- */
 static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
 {
+    /* Explorer restarted (or wasn't ready at launch): rebuild the tray icon. */
+    if (msg == g_wm_taskbar && g_wm_taskbar) {
+        g_tray_added = 0;
+        tray_add();
+        return 0;
+    }
+
     switch (msg) {
     case WM_CREATE:
         g_hwnd = hwnd;
@@ -786,8 +822,11 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         engine_init(&g_engine, &g_cfg, hwnd);
         apply_cfg_to_ui();
         show_page(0);
+        g_wm_taskbar = RegisterWindowMessageA("TaskbarCreated");
         tray_add();
-        RegisterHotKey(hwnd, HOTKEY_TOGGLE, MOD_CONTROL | MOD_ALT, 'G');
+        if (!RegisterHotKey(hwnd, HOTKEY_TOGGLE, MOD_CONTROL | MOD_ALT, 'G'))
+            log_append(LOG_WARN,
+                "Ctrl+Alt+G hotkey unavailable (another app owns it).");
         SetTimer(hwnd, TIMER_STATS, 1000, NULL);
         if (g_cfg.run_at_startup) sync_startup(1);
         if (g_cfg.enabled_on_start) set_running(1);
@@ -825,9 +864,19 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         if (id == IDC_TOGGLE && code == BN_CLICKED) {
             set_running(!g_engine.running);
         } else if (id >= IDC_RADIO_SMART && id < IDC_RADIO_SMART + MODE_COUNT && code == BN_CLICKED) {
-            g_cfg.mode = id - IDC_RADIO_SMART;
-            update_mode_desc(); save_cfg(); tray_update_tip();
-            log_append(LOG_INFO, "Mode changed.");
+            int nm = id - IDC_RADIO_SMART;
+            if (nm != g_cfg.mode) {
+                if (!confirm_mode_change(nm)) {
+                    /* user cancelled: revert the radio to the active mode */
+                    CheckRadioButton(hwnd, IDC_RADIO_SMART,
+                                     IDC_RADIO_SMART + MODE_COUNT - 1,
+                                     IDC_RADIO_SMART + g_cfg.mode);
+                    return 0;
+                }
+                g_cfg.mode = nm;
+                update_mode_desc(); save_cfg(); tray_update_tip();
+                log_append(LOG_INFO, "Mode changed.");
+            }
         } else if (id == IDC_CHK_DRYRUN && code == BN_CLICKED) {
             g_cfg.dry_run = (int)SendMessageA(h_chk_dry, BM_GETCHECK, 0, 0) == BST_CHECKED; save_cfg();
         } else if (id == IDC_CHK_SERVICES && code == BN_CLICKED) {
@@ -878,17 +927,24 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         } else if (id == IDM_TRAY_TOGGLE) {
             set_running(!g_engine.running);
         } else if (id == IDM_TRAY_EXIT) {
-            g_really_quit = 1; DestroyWindow(hwnd);
+            /* route through WM_CLOSE so engine_stop + save_cfg run first */
+            g_really_quit = 1; SendMessageA(hwnd, WM_CLOSE, 0, 0);
         } else if (id >= IDM_TRAY_MODE && id < IDM_TRAY_MODE + MODE_COUNT) {
-            g_cfg.mode = id - IDM_TRAY_MODE;
-            SendMessageA(h_radio[g_cfg.mode], BM_SETCHECK, BST_CHECKED, 0);
-            update_mode_desc(); save_cfg(); tray_update_tip();
+            int nm = id - IDM_TRAY_MODE;
+            if (nm != g_cfg.mode && confirm_mode_change(nm)) {
+                g_cfg.mode = nm;
+                CheckRadioButton(hwnd, IDC_RADIO_SMART,
+                                 IDC_RADIO_SMART + MODE_COUNT - 1,
+                                 IDC_RADIO_SMART + g_cfg.mode);
+                update_mode_desc(); save_cfg(); tray_update_tip();
+            }
         }
         return 0;
     }
 
     case WM_HOTKEY:
-        if (wp == HOTKEY_TOGGLE) set_running(!g_engine.running);
+        /* ignore while the modal picker is up (it disables the main window) */
+        if (wp == HOTKEY_TOGGLE && !g_pick_hwnd) set_running(!g_engine.running);
         return 0;
 
     case WM_HSCROLL:
@@ -1003,6 +1059,18 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         DestroyWindow(hwnd);
         return 0;
 
+    case WM_QUERYENDSESSION:
+        return TRUE;
+
+    case WM_ENDSESSION:
+        /* logoff/shutdown: undo temporary changes (restart services, etc.)
+         * before the process is torn down. */
+        if (wp) {
+            engine_stop(&g_engine);
+            save_cfg();
+        }
+        return 0;
+
     case WM_DESTROY:
         KillTimer(hwnd, TIMER_STATS);
         UnregisterHotKey(hwnd, HOTKEY_TOGGLE);
@@ -1081,6 +1149,13 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
         if (IsDialogMessageA(g_hwnd, &m)) continue;
         TranslateMessage(&m);
         DispatchMessageA(&m);
+    }
+
+    /* free any WM_APP_LOG heap strings still queued when the window closed */
+    {
+        MSG dm;
+        while (PeekMessageA(&dm, NULL, WM_APP_LOG, WM_APP_LOG, PM_REMOVE))
+            free((char *)dm.lParam);
     }
 
     engine_destroy(&g_engine);

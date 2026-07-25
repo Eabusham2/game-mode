@@ -16,6 +16,7 @@ LIBS    := -lcomctl32 -ladvapi32 -lgdi32 -luser32 -lkernel32 -lshell32 -lole32 -
 
 SRC := src/known_lists.c src/modes.c src/config.c src/engine.c src/gui.c
 OBJ := $(SRC:.c=.o)
+HDR := src/gamemode.h src/config.h src/engine.h src/known_lists.h
 
 TARGET := GameMode.exe
 
@@ -24,10 +25,11 @@ all: $(TARGET)
 $(TARGET): $(OBJ) resource.o
 	$(CC) $(OBJ) resource.o -o $@ $(LDFLAGS) $(LIBS)
 
-%.o: %.c
+# Coarse but correct: rebuild every object when any shared header changes.
+%.o: %.c $(HDR)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-resource.o: resource.rc app.manifest
+resource.o: resource.rc app.manifest assets/icon.ico
 	$(WINDRES) -i resource.rc -o resource.o
 
 clean:
