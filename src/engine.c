@@ -199,15 +199,16 @@ static void proclist_mark_self(ProcList *pl)
 
 /* ----------------------------------------------------- decision logic */
 
-/* Never-kill tier: nothing here is ever terminated, in any mode. */
-static int is_hard_protected(const Engine *e, const ProcEntry *p, DWORD foreground)
+/* Never-kill tier: nothing here is ever terminated, in any mode. wl is the
+ * caller's whitelist snapshot (see engine_scan_once). */
+static int is_hard_protected(const ProcEntry *p, DWORD foreground, const StrList *wl)
 {
     if (p->self) return 1;
     if (p->pid <= 4) return 1;                          /* System / Idle */
     if (p->pid == foreground && foreground != 0) return 1; /* app you're using */
     if (namelist_contains(&PROTECTED_SYSTEM, p->lname)) return 1;
     if (namelist_contains(&ANTI_CHEAT, p->lname)) return 1;
-    if (strlist_contains(&e->cfg->whitelist, p->lname)) return 1;
+    if (strlist_contains(wl, p->lname)) return 1;
     return 0;
 }
 
@@ -217,7 +218,11 @@ static int is_hard_protected(const Engine *e, const ProcEntry *p, DWORD foregrou
 static int is_soft_system(const ProcEntry *p)
 {
     const char *wd = windir_lower();
-    if (wd[0] == '\0' || p->lpath[0] == '\0') return 0;
+    if (wd[0] == '\0') return 0;
+    /* If we could not read the image path (protected/PPL processes even under
+     * admin), fail safe: treat it as an OS component so Risk/Nuclear and the
+     * heuristics never target it. */
+    if (p->lpath[0] == '\0') return 1;
     return strncmp(p->lpath, wd, strlen(wd)) == 0;
 }
 
@@ -230,13 +235,13 @@ static int is_known_good(const char *lname)
 }
 
 /* For Risk/Nuclear: is this name on the allow-list we keep? */
-static int in_keep_set(const Engine *e, const char *lname)
+static int in_keep_set(const Engine *e, const char *lname, const StrList *wl)
 {
     if (namelist_contains(&PROTECTED_SYSTEM, lname)) return 1;
     if (namelist_contains(&ANTI_CHEAT, lname)) return 1;
     if (namelist_contains(&GAME_PLATFORMS, lname)) return 1;
     if (namelist_contains(&KEEP_WHILE_GAMING, lname)) return 1;
-    if (strlist_contains(&e->cfg->whitelist, lname)) return 1;
+    if (strlist_contains(wl, lname)) return 1;
     if (e->cfg->mode == MODE_RISK && namelist_contains(&COMMON_APPS, lname)) return 1;
     return 0;
 }
@@ -267,15 +272,18 @@ static int preset_verdict(const Engine *e, const char *lname)
     return 0;
 }
 
-/* Decide whether a (non hard-protected) process should be terminated. */
-static int should_kill(const Engine *e, const ProcEntry *p)
+/* Decide whether a (non hard-protected) process should be terminated.
+ * Precedence (below the hard-protected tier): blacklist > presets > mode rules. */
+static int should_kill(const Engine *e, const ProcEntry *p,
+                       const StrList *wl, const StrList *bl)
 {
     const char *lname = p->lname;
-    int pv = preset_verdict(e, lname);
+    int pv;
 
-    if (pv < 0) return 0;                                       /* preset: keep */
-    if (strlist_contains(&e->cfg->blacklist, lname)) return 1;  /* user wins */
-    if (pv > 0) return 1;                                       /* preset: close */
+    if (strlist_contains(bl, lname)) return 1;  /* user blacklist always wins */
+    pv = preset_verdict(e, lname);
+    if (pv < 0) return 0;                        /* preset: keep */
+    if (pv > 0) return 1;                        /* preset: close */
 
     switch (e->cfg->mode) {
     case MODE_SMART:
@@ -287,7 +295,7 @@ static int should_kill(const Engine *e, const ProcEntry *p)
         return heuristic_junk(e, p);
     case MODE_RISK:
     case MODE_NUCLEAR:
-        if (in_keep_set(e, lname)) return 0;
+        if (in_keep_set(e, lname, wl)) return 0;
         if (is_soft_system(p)) return 0;   /* don't dismantle the OS */
         return 1;
     }
@@ -300,12 +308,15 @@ static void engine_log(Engine *e, int level, const char *fmt, ...)
     char *buf;
     va_list ap;
     if (!e->notify) return;
-    buf = (char *)malloc(512);
+    buf = (char *)malloc(1024);  /* wvsprintfA can emit up to 1024 chars */
     if (!buf) return;
     va_start(ap, fmt);
     wvsprintfA(buf, fmt, ap);   /* note: supports %s %d %u %lu %x, NOT %f */
     va_end(ap);
-    PostMessageA(e->notify, WM_APP_LOG, (WPARAM)level, (LPARAM)buf);
+    /* The GUI frees this heap string on receipt; if the post fails (queue full
+     * or window gone) free it here so it never leaks. */
+    if (!PostMessageA(e->notify, WM_APP_LOG, (WPARAM)level, (LPARAM)buf))
+        free(buf);
 }
 
 /* ----------------------------------------------------- termination */
@@ -343,7 +354,7 @@ static int service_accepts_stop(SC_HANDLE svc)
     return 0;
 }
 
-static long sweep_services(Engine *e, int dry)
+static long sweep_services(Engine *e, const StrList *wl, int dry)
 {
     SC_HANDLE scm;
     DWORD bytes = 0, returned = 0, resume = 0;
@@ -373,7 +384,7 @@ static long sweep_services(Engine *e, int dry)
         SC_HANDLE h;
         str_lower_copy(lname, sizeof(lname), svc[i].lpServiceName);
         if (namelist_contains(&ESSENTIAL_SERVICES, lname)) continue;
-        if (strlist_contains(&e->cfg->whitelist, lname)) continue;
+        if (strlist_contains(wl, lname)) continue;
 
         h = OpenServiceA(scm, svc[i].lpServiceName, SERVICE_STOP | SERVICE_QUERY_STATUS);
         if (!h) continue;
@@ -403,6 +414,7 @@ static long sweep_services(Engine *e, int dry)
 long engine_scan_once(Engine *e)
 {
     ProcList pl;
+    StrList wl, bl;
     long killed = 0, targets = 0, svc_stopped = 0;
     SIZE_T freed = 0;
     int dry = e->cfg->dry_run;
@@ -414,10 +426,27 @@ long engine_scan_once(Engine *e)
     }
     proclist_mark_self(&pl);
 
+    /* Snapshot the user lists once under the lock, then run the whole pass
+     * against the immutable copies. This lets the GUI thread add/remove
+     * entries (which realloc/free the live lists) without racing the worker. */
+    strlist_init(&wl);
+    strlist_init(&bl);
+    EnterCriticalSection(&e->lock);
+    strlist_copy(&wl, &e->cfg->whitelist);
+    strlist_copy(&bl, &e->cfg->blacklist);
+    LeaveCriticalSection(&e->lock);
+
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        if (is_hard_protected(e, p, pl.foreground_pid)) continue;
-        if (!should_kill(e, p)) continue;
+        if (is_hard_protected(p, pl.foreground_pid, &wl)) continue;
+        if (!should_kill(e, p, &wl, &bl)) continue;
+        /* The foreground app may have changed since the snapshot - never close
+         * whatever the user is looking at right now. */
+        {
+            DWORD fg = 0;
+            GetWindowThreadProcessId(GetForegroundWindow(), &fg);
+            if (fg && p->pid == fg) continue;
+        }
         ++targets;
         if (dry) {
             engine_log(e, LOG_DRY, "[dry-run] would close %s (pid %lu, %lu MB)",
@@ -427,16 +456,20 @@ long engine_scan_once(Engine *e)
         if (terminate_pid(e, p)) {
             ++killed;
             freed += p->mem;
-            /* remember windowed apps so "reopen on OFF" can restore them */
+            /* remember windowed apps so "reopen on OFF" can restore them
+             * (case-preserving: the path is passed back to CreateProcess) */
             if (p->has_window && p->path[0])
-                strlist_add(&e->closed_paths, p->path);
+                strlist_add_raw(&e->closed_paths, p->path);
         }
     }
     proclist_free(&pl);
 
     if (e->cfg->manage_services &&
         (e->cfg->mode == MODE_RISK || e->cfg->mode == MODE_NUCLEAR))
-        svc_stopped = sweep_services(e, dry);
+        svc_stopped = sweep_services(e, &wl, dry);
+
+    strlist_free(&wl);
+    strlist_free(&bl);
 
     EnterCriticalSection(&e->lock);
     e->stats.scans += 1;
@@ -477,7 +510,11 @@ void engine_init(Engine *e, Config *cfg, HWND notify)
     InitializeCriticalSection(&e->lock);
     strlist_init(&e->stopped_services);
     strlist_init(&e->closed_paths);
+    windir_lower();   /* warm the cache from this thread before the worker runs */
 }
+
+void engine_lock(Engine *e)   { EnterCriticalSection(&e->lock); }
+void engine_unlock(Engine *e) { LeaveCriticalSection(&e->lock); }
 
 void engine_destroy(Engine *e)
 {
@@ -552,7 +589,12 @@ void engine_stop(Engine *e)
     if (!e->running) return;
     SetEvent(e->stop_evt);
     if (e->thread) {
-        WaitForSingleObject(e->thread, 5000);
+        /* Wait for the worker to actually exit before touching the session
+         * undo lists / closing the handle. The stop event is set, so the
+         * worker returns after at most the current scan pass - never spin the
+         * teardown while it may still be running (that races engine_restore's
+         * strlist_clear and could leave a second worker running). */
+        WaitForSingleObject(e->thread, INFINITE);
         CloseHandle(e->thread);
         e->thread = NULL;
     }
@@ -577,8 +619,8 @@ void engine_preview(Engine *e, ProcCb cb, void *user)
     proclist_mark_self(&pl);
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        if (is_hard_protected(e, p, pl.foreground_pid)) continue;
-        if (should_kill(e, p))
+        if (is_hard_protected(p, pl.foreground_pid, &e->cfg->whitelist)) continue;
+        if (should_kill(e, p, &e->cfg->whitelist, &e->cfg->blacklist))
             cb(p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)), 1, user);
     }
     proclist_free(&pl);
@@ -592,7 +634,8 @@ void engine_list_running(Engine *e, ProcCb cb, void *user)
     proclist_mark_self(&pl);
     for (i = 0; i < pl.count; ++i) {
         ProcEntry *p = &pl.items[i];
-        int doomed = (!is_hard_protected(e, p, pl.foreground_pid)) && should_kill(e, p);
+        int doomed = (!is_hard_protected(p, pl.foreground_pid, &e->cfg->whitelist)) &&
+                     should_kill(e, p, &e->cfg->whitelist, &e->cfg->blacklist);
         cb(p->name, p->pid, (unsigned long)(p->mem / (1024 * 1024)), doomed, user);
     }
     proclist_free(&pl);

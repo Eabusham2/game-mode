@@ -7,13 +7,14 @@ on:
   pull_request:
   workflow_dispatch:
 
-# Allow the release job to create/update releases (rolling "latest" + tags).
+# Least privilege by default; the release job opts into write below.
 permissions:
-  contents: write
+  contents: read
 
 concurrency:
   group: build-${{ github.ref }}
-  cancel-in-progress: true
+  # Don't cancel an in-flight main run - it may be mid-publish of the release.
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 jobs:
   # Fast, reproducible cross-build with MinGW-w64 on Linux. This is the
@@ -79,20 +80,31 @@ jobs:
       github.event_name == 'push' &&
       (startsWith(github.ref, 'refs/tags/v') || github.ref == 'refs/heads/main')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write   # this job creates/updates releases and tags
     steps:
-      - name: Download MSVC build
+      # Ship the authoritative MinGW cross-build (the verified PE32+ artifact).
+      - name: Download build
         uses: actions/download-artifact@v4
         with:
-          name: GameMode-msvc-x64
+          name: GameMode-windows-x64
 
-      # Rolling build: every push to main (re)publishes GameMode.exe on the
-      # "latest" tag. Stable, login-free download link:
+      # Rolling build: reset the "latest" tag+release first so the tag always
+      # points at the newest commit (softprops updates a release but never MOVES
+      # an existing tag), then republish the exe on it. Login-free download:
       #   https://github.com/<owner>/<repo>/releases/download/latest/GameMode.exe
+      - name: Reset rolling "latest" release
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release delete latest --cleanup-tag --yes --repo "$GITHUB_REPOSITORY" || true
+
       - name: Publish rolling "latest" build
         if: github.ref == 'refs/heads/main'
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
+          target_commitish: ${{ github.sha }}
           name: Latest build (rolling)
           prerelease: true
           files: GameMode.exe

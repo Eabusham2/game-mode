@@ -50,32 +50,69 @@ int strlist_contains(const StrList *l, const char *name_lower)
     return 0;
 }
 
+/* Append an already-normalised string, growing as needed. */
+static int strlist_push(StrList *l, const char *s)
+{
+    char *copy;
+    if (l->count >= l->cap) {
+        int ncap = l->cap ? l->cap * 2 : 8;
+        char **ni = (char **)realloc(l->items, (size_t)ncap * sizeof(char *));
+        if (!ni) return 0;
+        l->items = ni; l->cap = ncap;
+    }
+    copy = (char *)malloc(strlen(s) + 1);
+    if (!copy) return 0;
+    strcpy(copy, s);
+    l->items[l->count++] = copy;
+    return 1;
+}
+
+/* Trim leading/trailing whitespace in place; returns the trimmed start. */
+static char *trim_inplace(char *s)
+{
+    char *e;
+    while (*s == ' ') ++s;
+    e = s + strlen(s);
+    while (e > s && (e[-1] == ' ' || e[-1] == '\r' || e[-1] == '\n')) *--e = '\0';
+    return s;
+}
+
 int strlist_add(StrList *l, const char *name)
 {
     char buf[260];
-    char *copy;
+    char *s;
     if (!name || !*name) return 0;
     str_lower_copy(buf, sizeof(buf), name);
-    /* trim leading/trailing spaces */
-    {
-        char *s = buf, *e;
-        while (*s == ' ') ++s;
-        e = s + strlen(s);
-        while (e > s && (e[-1] == ' ' || e[-1] == '\r' || e[-1] == '\n')) *--e = '\0';
-        if (!*s) return 0;
-        if (strlist_contains(l, s)) return 0;
-        if (l->count >= l->cap) {
-            int ncap = l->cap ? l->cap * 2 : 8;
-            char **ni = (char **)realloc(l->items, (size_t)ncap * sizeof(char *));
-            if (!ni) return 0;
-            l->items = ni; l->cap = ncap;
-        }
-        copy = (char *)malloc(strlen(s) + 1);
-        if (!copy) return 0;
-        strcpy(copy, s);
-        l->items[l->count++] = copy;
-    }
-    return 1;
+    s = trim_inplace(buf);
+    if (!*s) return 0;
+    if (strlist_contains(l, s)) return 0;          /* already lower-case: strcmp ok */
+    return strlist_push(l, s);
+}
+
+/* Like strlist_add but preserves the original case (used for image paths that
+ * must be passed back to CreateProcess verbatim). Dedupe is case-insensitive. */
+int strlist_add_raw(StrList *l, const char *name)
+{
+    char buf[MAX_PATH];
+    char *s;
+    int i;
+    if (!name || !*name) return 0;
+    lstrcpynA(buf, name, sizeof(buf));
+    s = trim_inplace(buf);
+    if (!*s) return 0;
+    for (i = 0; i < l->count; ++i)
+        if (lstrcmpiA(l->items[i], s) == 0) return 0;
+    return strlist_push(l, s);
+}
+
+/* Deep-copy src into dst (dst is cleared first). Items are already normalised,
+ * so they are copied verbatim. */
+void strlist_copy(StrList *dst, const StrList *src)
+{
+    int i;
+    strlist_clear(dst);
+    for (i = 0; i < src->count; ++i)
+        strlist_push(dst, src->items[i]);
 }
 
 void strlist_remove(StrList *l, const char *name_lower)
@@ -116,14 +153,25 @@ static void strlist_split(StrList *l, const char *src)
 }
 
 /* ------------------------------------------------------------------ paths */
+/* Bounded "a + b" into dst (always NUL-terminated); b carries its separator. */
+static void path_join(char *dst, size_t size, const char *a, const char *b)
+{
+    size_t la;
+    if (!size) return;
+    lstrcpynA(dst, a, (int)size);
+    la = strlen(dst);
+    if (la + 1 < size)
+        lstrcpynA(dst + la, b, (int)(size - la));
+}
+
 static void config_path(char *out, size_t size)
 {
     char base[MAX_PATH];
     if (SUCCEEDED(SHGetFolderPathA(NULL, CSIDL_PROFILE, NULL, 0, base))) {
         char dir[MAX_PATH];
-        wsprintfA(dir, "%s\\.gamemode", base);
+        path_join(dir, sizeof(dir), base, "\\.gamemode");
         CreateDirectoryA(dir, NULL);
-        wsprintfA(out, "%s\\config.ini", dir);
+        path_join(out, size, dir, "\\config.ini");
     } else {
         lstrcpynA(out, ".\\gamemode.ini", (int)size);
     }
