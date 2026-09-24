@@ -121,9 +121,11 @@ static void sync_startup(int enable)
             0, NULL, 0, KEY_SET_VALUE, NULL, &k, NULL) != ERROR_SUCCESS)
         return;
     if (enable) {
-        char path[MAX_PATH], q[MAX_PATH + 4];
+        char path[MAX_PATH], q[MAX_PATH + 16];
         GetModuleFileNameA(NULL, path, sizeof(path));
-        wsprintfA(q, "\"%s\"", path);
+        /* Logon launches start in the tray (when "minimise to tray" is on)
+         * instead of popping the window up at every sign-in. */
+        wsprintfA(q, "\"%s\" %s", path, ARG_START_IN_TRAY);
         RegSetValueExA(k, APP_NAME, 0, REG_SZ, (const BYTE *)q, (DWORD)strlen(q) + 1);
     } else {
         RegDeleteValueA(k, APP_NAME);
@@ -722,6 +724,10 @@ static LRESULT CALLBACK PickerProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
     switch (msg) {
     case WM_COMMAND: {
         int id = LOWORD(wp);
+        if (id == IDCANCEL) {           /* Esc, via IsDialogMessage */
+            close_picker();
+            return 0;
+        }
         if (id == IDC_PICK_ADD) {
             int n = (int)SendMessageA(g_pick_lv, LVM_GETITEMCOUNT, 0, 0);
             int i, added = 0;
@@ -1015,6 +1021,12 @@ static LRESULT CALLBACK WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp)
         return 0;
 
     case WM_APP_TRAY:
+        if (g_pick_hwnd) {
+            /* the modal picker owns the UI: bring it forward instead of
+             * popping a menu over a disabled main window */
+            SetForegroundWindow(g_pick_hwnd);
+            return 0;
+        }
         if (lp == WM_LBUTTONDBLCLK) show_main_window();
         else if (lp == WM_RBUTTONUP || lp == WM_CONTEXTMENU) show_tray_menu();
         return 0;
@@ -1090,9 +1102,27 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     MSG m;
     RECT r;
     DWORD style = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_MINIMIZEBOX;
+    HANDLE instance_mutex;
+    int start_in_tray;
 
-    (void)hPrev; (void)cmd;
+    (void)hPrev;
     g_hinst = hInst;
+
+    /* One GameMode at a time: with "run at startup" on, a manual launch
+     * would otherwise start a second engine scanning alongside the first.
+     * Hand the existing instance the focus instead. */
+    instance_mutex = CreateMutexA(NULL, FALSE, APP_MUTEX_NAME);
+    if (instance_mutex && GetLastError() == ERROR_ALREADY_EXISTS) {
+        HWND prev = FindWindowA(APP_WNDCLASS, NULL);
+        if (prev) {
+            ShowWindow(prev, SW_SHOW);
+            ShowWindow(prev, SW_RESTORE);
+            SetForegroundWindow(prev);
+        }
+        CloseHandle(instance_mutex);
+        return 0;
+    }
+    start_in_tray = (cmd && strstr(cmd, ARG_START_IN_TRAY) != NULL);
 
     icc.dwSize = sizeof(icc);
     icc.dwICC = ICC_TAB_CLASSES | ICC_BAR_CLASSES | ICC_LISTVIEW_CLASSES | ICC_STANDARD_CLASSES;
@@ -1121,7 +1151,7 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     wc.hInstance = hInst;
     wc.hCursor = LoadCursor(NULL, IDC_ARROW);
     wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
-    wc.lpszClassName = "GameModeWndClass";
+    wc.lpszClassName = APP_WNDCLASS;
     wc.hIcon = g_icon_big ? g_icon_big : LoadIcon(NULL, IDI_APPLICATION);
     wc.hIconSm = g_icon_small ? g_icon_small : wc.hIcon;
     if (!RegisterClassExA(&wc)) return 1;
@@ -1141,8 +1171,16 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     if (!hwnd) return 1;
     if (g_icon_big)   SendMessageA(hwnd, WM_SETICON, ICON_BIG, (LPARAM)g_icon_big);
     if (g_icon_small) SendMessageA(hwnd, WM_SETICON, ICON_SMALL, (LPARAM)g_icon_small);
-    ShowWindow(hwnd, show);
-    UpdateWindow(hwnd);
+    if (start_in_tray && g_cfg.minimize_to_tray) {
+        /* launched at logon: live in the tray until the user asks for us */
+        ShowWindow(hwnd, SW_HIDE);
+        tray_balloon("GameMode", "Started in the tray. Double-click the icon "
+                     "to open, right-click for options.");
+        g_warned_tray = 1;
+    } else {
+        ShowWindow(hwnd, show);
+        UpdateWindow(hwnd);
+    }
 
     while (GetMessageA(&m, NULL, 0, 0) > 0) {
         if (g_pick_hwnd && IsDialogMessageA(g_pick_hwnd, &m)) continue;
@@ -1163,5 +1201,6 @@ int APIENTRY WinMain(HINSTANCE hInst, HINSTANCE hPrev, LPSTR cmd, int show)
     free(g_rows);
     DeleteObject(g_font); DeleteObject(g_font_big);
     DeleteObject(g_font_status); DeleteObject(g_font_log);
+    if (instance_mutex) CloseHandle(instance_mutex);
     return (int)m.wParam;
 }

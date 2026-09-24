@@ -554,10 +554,22 @@ void engine_restore(Engine *e)
             STARTUPINFOA si;
             PROCESS_INFORMATION pi;
             char cmd[MAX_PATH + 4];
+            char dir[MAX_PATH];
+            const char *path = e->closed_paths.items[i];
+            const char *slash = strrchr(path, '\\');
             ZeroMemory(&si, sizeof(si)); si.cb = sizeof(si);
             ZeroMemory(&pi, sizeof(pi));
-            wsprintfA(cmd, "\"%s\"", e->closed_paths.items[i]);
-            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL, NULL, &si, &pi)) {
+            wsprintfA(cmd, "\"%s\"", path);
+            /* Start the app in its own folder, like a shortcut would. Many
+             * apps (launchers, Electron apps) resolve resources relative to
+             * the working directory and misbehave when inherited from us. */
+            dir[0] = '\0';
+            if (slash && (size_t)(slash - path) < sizeof(dir)) {
+                memcpy(dir, path, (size_t)(slash - path));
+                dir[slash - path] = '\0';
+            }
+            if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, 0, NULL,
+                               dir[0] ? dir : NULL, &si, &pi)) {
                 engine_log(e, LOG_INFO, "Reopened %s", e->closed_paths.items[i]);
                 CloseHandle(pi.hProcess); CloseHandle(pi.hThread);
                 ++launched;
