@@ -42,7 +42,8 @@ closing them). Flip it **OFF** and everything is left alone.
 - **Temporary by design / restore on OFF** — GameMode only *stops* and *closes*
   things while ON; it **never** disables anything permanently (no startup or
   service-start-type changes). When you turn it **OFF** it can **restart the
-  services it stopped** and optionally **reopen the apps it closed**.
+  services it stopped** and optionally **reopen the apps it closed** (each in
+  its own folder, like a shortcut would).
 - **Built-in knowledge** of common bloatware (Adobe Creative Cloud helpers,
   updaters, vendor tray apps), Windows telemetry tasks (CompatTelRunner,
   DeviceCensus, …), game launchers, **anti-cheats**, Discord and the essential
@@ -62,6 +63,11 @@ closing them). Flip it **OFF** and everything is left alone.
   (show, toggle, switch mode, exit), and **coalesced balloon notifications**
   when things are closed in the background.
 - **Run at Windows startup** (one checkbox; writes the `HKCU…\Run` value).
+  Logon launches start **silently in the tray** (with *Minimise to tray* on)
+  instead of popping the window up at every sign-in.
+- **Single instance** — launching `GameMode.exe` while it is already running
+  (say, from the tray after a startup launch) just brings the existing window
+  to the front; two engines never scan side by side.
 - **Dry-run** + **Preview** so you can see exactly what a mode would close
   before arming it.
 - **Colour-coded live activity log** (RichEdit) and running counters, including
@@ -159,6 +165,9 @@ services, the embedded manifest requests **Administrator** elevation (UAC).
    the send buttons).
 4. Flip the master switch **ON** (or press `Ctrl+Alt+G`).
 5. Escalate to **Aggressive / Risk / Nuclear** only once you've previewed them.
+
+`GameMode.exe --tray` starts hidden in the tray (this is what the *Run at
+Windows startup* entry uses); press `Esc` to dismiss the task picker.
 
 ---
 

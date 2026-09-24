@@ -22,7 +22,7 @@
 
 #define APP_NAME      "GameMode"
 #define APP_TITLE     "GameMode - System Optimizer"
-#define APP_VERSION   "3.0.0"
+#define APP_VERSION   "3.1.0"
 
 /* ------------------------------------------------------------------ modes */
 enum {
@@ -120,6 +120,12 @@ enum {
 #define ID_TRAY            0xA000
 #define HOTKEY_TOGGLE      1
 #define IDI_APPICON        101
+
+/* Single-instance guard + the window class a second launch looks for. */
+#define APP_MUTEX_NAME     "Local\\GameMode.SingleInstance"
+#define APP_WNDCLASS       "GameModeWndClass"
+/* Passed on the HKCU Run command line so a logon launch starts in the tray. */
+#define ARG_START_IN_TRAY  "--tray"
 
 /* ------------------------------------------------------------ small string utils */
 /* Lower-case copy of src into dst (size bytes, always NUL-terminated). */
