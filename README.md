@@ -221,3 +221,11 @@ GameMode force-closes programs with `TerminateProcess` (no graceful save).
 may affect system features until the next reboot. Use **Preview** / **Dry run**
 until you trust your configuration. You are responsible for what you put on your
 blacklist and which mode you arm.
+
+## Search keywords (ignore)
+
+`game-mode`, `gamemode`, `windows`, `win32`, `native-c`, `desktop-utility`,
+`gaming`, `background-processes`, `process-management`, `process-monitoring`, `process-termination`, `process-viewer`,
+`bloatware-control`, `telemetry-tasks`, `service-control`, `windows-services`, `system-tray`, `tray-application`,
+`global-hotkeys`, `start-with-windows`, `process-whitelist`, `process-blacklist`, `foreground-protection`, `dry-run`,
+`process-preview`, `activity-log`, `ini-settings`, `single-instance`, `task-picker`, `service-restoration`
